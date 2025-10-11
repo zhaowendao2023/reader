@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "TangHan";
+  src: url("./tangHan.woff2") format("woff2");
+}
+
+:root {
+  --p-font-size: 16px;
+  --p-letter-spacing: 2px;
+  --p-line-height: 1.6;
+  --p-margin-bottom: 1.5em;
+  --color: #333;
+  --text-bgc: #fff;
+  --icon-fill: currentColor;
+}
+
+.icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  fill: var(--icon-fill);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.icon:hover {
+  fill: #36ad6a
+}
