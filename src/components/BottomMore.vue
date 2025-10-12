@@ -9,8 +9,6 @@ defineProps({
 watch(
   cssVars,
   () => {
-    console.log(11);
-
     booksStore.setCss();
   },
   { deep: true }

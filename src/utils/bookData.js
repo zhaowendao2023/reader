@@ -1,4 +1,4 @@
-import { writeFile, remove, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { writeFile, remove, mkdir } from '@tauri-apps/plugin-fs';
 import { openFile } from '../js/read';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useBooks } from '../store/loadBooks';
@@ -34,6 +34,11 @@ export const getEPUB = async (path) => {
   return book
 }
 
+export const getMOBI = async (path) => {
+  const book = await openFile(path)
+  return book
+}
+
 export const clearLoadDate = async () => {
   await remove('resource/data', {
     baseDir: useBooks().baseSrc,
@@ -45,7 +50,6 @@ export const clearLoadDate = async () => {
 }
 
 const writeFileData = async (path, name, arrayBuffer) => {
-  start()
   const hash = await calculateHash(path)
   const coverPath = "resource/data/" + hash;
   await mkdir(coverPath, {
@@ -58,28 +62,6 @@ const writeFileData = async (path, name, arrayBuffer) => {
   return !useBooks().baseSrc ? turePath : `${(await appDataDir())}/${turePath}`
 }
 
-async function start() {
-  const has = await exists("resource/data", {
-    baseDir: useBooks().baseSrc
-  });
-
-  if (!has) {
-    const reHas = await exists("resource", {
-      baseDir: useBooks().baseSrc
-    });
-    if (!reHas) {
-      await mkdir('resource', {
-        baseDir: useBooks().baseSrc
-      })
-    }
-    await mkdir('resource/data', {
-      baseDir: useBooks().baseSrc
-    })
-  }
-  console.log('startCreatePath');
-
-}
-
 export const deleteFileData = async (id) => {
   const coverPath = "resource/data/" + id;
   await remove(coverPath, {
@@ -89,6 +71,5 @@ export const deleteFileData = async (id) => {
 }
 
 export const getTheme = async () => {
-  const theme = (await import('./theme')).theme
-  return theme
+  return (await import('./theme')).theme
 }

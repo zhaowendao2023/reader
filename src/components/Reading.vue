@@ -1,5 +1,6 @@
 <script setup>
 import { useBooks } from "../store/loadBooks";
+import MobiReading from "./MobiReading.vue";
 
 const booksStore = useBooks();
 const containerRef = ref(null);
@@ -77,6 +78,11 @@ provide("moveMethods", moveMethods);
       />
       <EpubReading
         v-else-if="bookInfo.ext.endsWith('epub')"
+        ref="containerRef"
+        @click="boxShow"
+      />
+      <MobiReading
+        v-else-if="bookInfo.ext.endsWith('mobi')"
         ref="containerRef"
         @click="boxShow"
       />

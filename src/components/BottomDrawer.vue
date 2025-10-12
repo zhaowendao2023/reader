@@ -1,5 +1,4 @@
 <script setup>
-// import Icon from "./Icon.vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useBooks } from "../store/loadBooks";
 
@@ -11,10 +10,10 @@ const moveMethods = inject("moveMethods");
 const active = ref(false);
 const now = computed(() => index.value.nowIndex + 1);
 const iconSize = 20;
-const lowHeigh = ref("10vh");
+const lowHeight = ref("10vh");
 
 watch(show, () => {
-  lowHeigh.value = "10vh";
+  lowHeight.value = "10vh";
 });
 
 const isActive = () => {
@@ -37,13 +36,13 @@ const selectedKeys = ref([]); // 选中状态
   <div>
     <n-drawer
       v-model:show="show"
-      :height="lowHeigh"
+      :height="lowHeight"
       placement="bottom"
       :auto-focus="false"
       :show-mask="false"
       :mask-closable="false"
     >
-      <BottomMore v-if="lowHeigh === '40vh'" :height="'30vh'" />
+      <BottomMore v-if="lowHeight === '40vh'" :height="'30vh'" />
       <div class="bottom-T">
         <n-button quaternary round @click="moveMethods.left">
           <n-icon :size="iconSize">
@@ -61,7 +60,7 @@ const selectedKeys = ref([]); // 选中状态
         <n-icon :size="iconSize" @click="isActive">
           <Icon id="icon-catalog" />
         </n-icon>
-        <n-icon :size="iconSize" @click="lowHeigh = '40vh'">
+        <n-icon :size="iconSize" @click="lowHeight = '40vh'">
           <Icon id="icon-shezhi" />
         </n-icon>
         <n-icon

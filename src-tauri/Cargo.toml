@@ -28,6 +28,8 @@ tauri-plugin-store = "2"
 flate2 = "1.1.2"
 tauri-plugin-window-state = "2"
 tauri-plugin-android-fs = "16.1.2"
+memmap2 = "0.9.8"
+tokio = { version = "1.0", features = ["full"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"

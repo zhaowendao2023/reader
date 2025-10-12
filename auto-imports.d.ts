@@ -27,6 +27,7 @@ declare global {
   const getCurrentScope: typeof import('vue')['getCurrentScope']
   const getCurrentWatcher: typeof import('vue')['getCurrentWatcher']
   const getEPUB: typeof import('./src/utils/bookData.js')['getEPUB']
+  const getMOBI: typeof import('./src/utils/bookData.js')['getMOBI']
   const getTheme: typeof import('./src/utils/bookData.js')['getTheme']
   const h: typeof import('vue')['h']
   const inject: typeof import('vue')['inject']

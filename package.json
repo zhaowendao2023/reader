@@ -20,6 +20,7 @@
     "@zip.js/zip.js": "^2.8.4",
     "dialog": "^0.3.1",
     "fflate": "^0.8.2",
+    "foliate-js": "^1.0.1",
     "mitt": "^3.0.1",
     "naive-ui": "^2.43.1",
     "pinia": "^3.0.3",

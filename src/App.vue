@@ -13,6 +13,7 @@
 <script setup>
 import { useBooks } from "./store/loadBooks";
 import { darkTheme } from "naive-ui";
+import {exists, mkdir} from "@tauri-apps/plugin-fs";
 
 const booksStore = useBooks();
 const theme = ref({});
@@ -20,8 +21,30 @@ const theme = ref({});
 onBeforeMount(async () => {
   await booksStore.loadData();
   theme.value = await getTheme();
+  await start()
   console.log("环境变量平台:", booksStore.platform);
 });
+
+async function start() {
+  const has = await exists("resource/data", {
+    baseDir: useBooks().baseSrc
+  });
+
+  if (!has) {
+    const reHas = await exists("resource", {
+      baseDir: useBooks().baseSrc
+    });
+    if (!reHas) {
+      await mkdir('resource', {
+        baseDir: useBooks().baseSrc
+      })
+    }
+    await mkdir('resource/data', {
+      baseDir: useBooks().baseSrc
+    })
+  }
+  console.log('startCreatePath');
+}
 </script>
 
 <style scoped>

@@ -29,8 +29,6 @@ const options = [
     // disabled: true,
   },
 ];
-
-const color = "#33333333";
 </script>
 
 <template>
@@ -48,7 +46,7 @@ const color = "#33333333";
               <Icon id="icon-fanhui" />
             </n-icon>
           </n-button>
-          <div style="width: 50px">{{ now }} / {{ index.total }}</div>
+          <div style="width: 6rem">{{ now }} / {{ index.total }}</div>
         </div>
         <div
           @mousedown="appWindow.startDragging"

@@ -1,6 +1,9 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::fs;
+// use std::path::PathBuf;
+// use std::time::Instant;
 use tauri_plugin_android_fs::{AndroidFsExt, PersistedUriPermission};
+// use tokio::fs::File;
+// use tokio::io::{AsyncReadExt, BufReader};
 #[tauri::command]
 async fn pick_file(app: tauri::AppHandle) -> Result<String, String> {
     let api = app.android_fs();
@@ -55,13 +58,37 @@ fn clear_all_url(app: tauri::AppHandle) {
     let _ = api.release_all_persisted_uri_permissions();
 }
 
-#[tauri::command]
-async fn read_file_as_bytes(file_path: String) -> Result<Vec<u8>, String> {
-    println!("成功释放权限 for URI: {}", file_path);
-    // 使用 std::fs::read 一次性读取文件为 Vec<u8>
-    let data = fs::read(&file_path).map_err(|e| e.to_string())?;
-    Ok(data) // Vec<u8> 会被 Tauri 高效地传递给前端
-}
+// const CHUNK_SIZE: usize = 1024 * 1024; // 1MB
+
+// #[tauri::command]
+// async fn read_file_as_bytes() -> Result<Vec<u8>, String> {
+//     // 记录开始时间
+//     let start = Instant::now();
+//     let path = PathBuf::from("F:\\comics\\[WaterRing] Chiori (Genshin Impact) [Decensored].cbz");
+
+//     // 内存映射
+//     let file = File::open(&path).await.map_err(|e| e.to_string())?;
+//     let mut reader = BufReader::new(file);
+
+//     let mut buffer = vec![0; CHUNK_SIZE];
+//     let mut chunks = Vec::new();
+
+//     loop {
+//         let n = reader.read(&mut buffer).await.map_err(|e| e.to_string())?;
+//         if n == 0 {
+//             break;
+//         }
+
+//         // 截取实际读取部分
+//         let chunk = buffer[..n].to_vec();
+//         chunks.push(chunk);
+//     }
+
+//     // 计算耗时
+//     let duration = start.elapsed();
+//     println!("读取耗时: {:?}", duration);
+//     Ok(chunks)
+// }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -76,8 +103,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clear_url,
             clear_all_url,
-            pick_file,
-            read_file_as_bytes
+            pick_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

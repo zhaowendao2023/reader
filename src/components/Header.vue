@@ -18,7 +18,7 @@ const handleAddFile = async () => {
       filters: [
         {
           name: "book Files",
-          extensions: ["zip", "cbz", "epub"],
+          extensions: ["zip", "cbz", "epub", "mobi"],
         },
       ],
     });
@@ -67,9 +67,11 @@ const excuteFiles = async (files) => {
     )} 毫秒`
   ); // 保留3位小数
   await booksStore.addBook(newBooks);
-  const endTime = performance.now();
-  const executionTime = endTime - startTime;
-  console.log(`excuteFiles函数执行耗时: ${executionTime.toFixed(3)} 毫秒`); // 保留3位小数
+  console.log(
+    `excuteFiles函数执行耗时: ${(performance.now() - startTime).toFixed(
+      3
+    )} 毫秒`
+  ); // 保留3位小数
 };
 
 const handleClearAll = async () => {
@@ -157,6 +159,15 @@ const options = [
       },
     },
   },
+  {
+    label: "test",
+    props: {
+      onClick: async () => {
+        let data = await invoke("read_file_as_bytes");
+        console.log("data", data);
+      },
+    },
+  },
 ];
 </script>
 
@@ -196,7 +207,7 @@ const options = [
             circle
             @click="async () => await booksStore.changeTheme()"
           >
-            <n-icon :size="25">
+            <n-icon :size="20">
               <Icon
                 :id="booksStore.theme ? 'icon-cubanrijian' : 'icon-yejianmoshi'"
               />
@@ -204,7 +215,7 @@ const options = [
           </n-button>
           <n-button quaternary circle>
             <n-dropdown trigger="click" :options="options" size="large">
-              <n-icon :size="25">
+              <n-icon :size="20">
                 <Icon id="icon-androidgengduo" />
               </n-icon>
             </n-dropdown>
@@ -215,7 +226,7 @@ const options = [
             circle
             @click="appWindow.close()"
           >
-            <n-icon :size="25">
+            <n-icon :size="20">
               <Icon id="icon-dengluzhuceguanbi" />
             </n-icon>
           </n-button>
