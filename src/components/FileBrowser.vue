@@ -334,7 +334,7 @@ watch(
           @click="toggleFavorite"
           :title="isFavorite ? '取消收藏' : '收藏此文件夹'"
         >
-          <Icon :id="isFavorite ? 'star' : 'star'" :size="18" :stroke-width="isFavorite ? 2.2 : 1.6" />
+          <Icon :id="isFavorite ? 'star' : 'star'" :size="18" :stroke-width="isFavorite ? 2.2 : 1.8" />
         </button>
       </div>
     </div>
@@ -386,7 +386,7 @@ watch(
           <div class="grid-cover-wrap">
             <img v-if="!entry.isDir && covers[entry.key]" :src="covers[entry.key]" class="grid-cover" alt="" loading="lazy" decoding="async" />
             <span v-else class="grid-icon" :class="{ dir: entry.isDir }">
-              <Icon :id="entry.isDir ? 'folder' : 'book-open'" :size="38" :stroke-width="1.4" />
+              <Icon :id="entry.isDir ? 'folder' : 'book-open'" :size="38" :stroke-width="1.75" />
             </span>
             <span v-if="!entry.isDir" class="grid-ext mono">{{ entry.ext.toUpperCase() }}</span>
           </div>

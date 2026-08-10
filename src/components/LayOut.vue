@@ -74,7 +74,7 @@ const themeIcon = computed(() => (booksStore.theme ? "sun" : "moon"));
 
 const navItems = [
   { label: "书架", key: "shelf", icon: "library", index: "01" },
-  { label: "文件", key: "browse", icon: "folder-tree", index: "02" },
+  { label: "文件", key: "browse", icon: "folder", index: "02" },
 ];
 
 const menuValue = computed(() => (route.path === "/browse" ? "browse" : "shelf"));
@@ -107,12 +107,11 @@ const handleMenuSelect = (key) => {
   width: var(--rail-w);
   display: flex;
   flex-direction: column;
-  background: var(--panel);
-  backdrop-filter: blur(22px) saturate(1.3);
-  -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  background: var(--bg-1);
   border-right: 1px solid var(--line);
-  transition: width 0.45s var(--ease-out);
+  transition: width 0.32s var(--ease-out);
   overflow: hidden;
+  will-change: width;
 }
 
 .rail-inner {
@@ -162,7 +161,7 @@ const handleMenuSelect = (key) => {
   overflow: hidden;
   white-space: nowrap;
   max-width: 180px;
-  transition: opacity 0.25s, transform 0.35s var(--ease-out), max-width 0.4s var(--ease-out);
+  transition: opacity 0.18s, transform 0.25s var(--ease-out), max-width 0.25s var(--ease-out);
 
   &.hidden {
     opacity: 0;
@@ -228,7 +227,7 @@ const handleMenuSelect = (key) => {
     letter-spacing: 0.06em;
     overflow: hidden;
     white-space: nowrap;
-    transition: opacity 0.25s, transform 0.35s var(--ease-out), max-width 0.4s var(--ease-out);
+    transition: opacity 0.18s, transform 0.25s var(--ease-out), max-width 0.25s var(--ease-out);
     &.hidden {
       opacity: 0;
       transform: translateX(-8px);
@@ -311,8 +310,9 @@ const handleMenuSelect = (key) => {
   bottom: 0;
   left: var(--rail-w);
   overflow: hidden;
-  transition: left 0.45s var(--ease-out);
+  transition: left 0.32s var(--ease-out);
   background: var(--bg-0);
+  will-change: left;
 }
 
 .view-stage {

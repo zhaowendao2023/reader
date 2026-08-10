@@ -242,7 +242,7 @@ const plateStyles = [
         >
           <div class="plate-art" :style="{ background: plateStyles[i % plateStyles.length] }">
             <span class="plate-art-no mono">{{ String(i + 1).padStart(2, "0") }}</span>
-            <Icon id="folder" :size="34" class="plate-ico" :stroke-width="1.6" />
+            <Icon id="folder" :size="34" class="plate-ico" :stroke-width="1.75" />
             <span class="plate-art-line"></span>
           </div>
           <button class="plate-remove" title="取消收藏" @click.stop="removeDir(dir)">

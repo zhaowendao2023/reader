@@ -148,7 +148,7 @@ const options = computed(() => [
   },
   {
     label: "清空文件",
-    icon: renderIcon("trash-2"),
+    icon: renderIcon("trash"),
     props: {
       onClick: async () => {
         await handleClearAll();
@@ -160,7 +160,7 @@ const options = computed(() => [
 
 <template>
   <div class="topbar-wrap">
-    <header class="topbar glass">
+    <header class="topbar glass" data-tauri-drag-region>
       <div class="tb-left">
         <button class="tb-btn" title="切换侧栏" @click="ui.toggleSider()">
           <Icon :id="ui.siderCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="19" />
@@ -172,8 +172,9 @@ const options = computed(() => [
         </div>
       </div>
 
+      <div v-if="isWindows" class="tb-drag" data-tauri-drag-region @mousedown="appWindow.startDragging"></div>
+
       <div class="tb-right">
-        <div v-if="isWindows" class="drag-region" @mousedown="appWindow.startDragging"></div>
         <button class="tb-btn" title="切换外观" @click="booksStore.changeTheme()">
           <Icon :id="themeIcon" :size="19" />
         </button>
@@ -291,9 +292,10 @@ const options = computed(() => [
   border-radius: 6px;
 }
 
-.drag-region {
-  flex: 1;
-  min-width: 40px;
+.tb-drag {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 48px;
   height: 100%;
 }
 </style>
