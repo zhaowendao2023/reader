@@ -8,6 +8,11 @@ const routes = [
     component: () => import('@/components/LayOut.vue') // 封面组件
   },
   {
+    path: '/browse',         // 文件浏览页路径
+    name: 'Browse',
+    component: () => import('@/components/LayOut.vue')
+  },
+  {
     path: '/reading/:id',    // 阅读页路径
     name: 'Reading',
     component: () => import('@/components/Reading.vue') // 阅读组件

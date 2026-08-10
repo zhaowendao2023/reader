@@ -19,14 +19,13 @@ const bookInfo = ref(null);
 onBeforeMount(() => {
   const book = booksStore.getBook(route.params.id);
   bookInfo.value = book;
-  console.log("path", book.path);
+  console.log("path", book);
 });
 
 provide("bookInfo", bookInfo);
 const boxShow = (e) => {
-  const x = e.clientX; // 点击的 X 坐标
-  const y = e.clientY; // 点击的 Y 坐标
-  // 定义中间区域（示例：屏幕宽度的 60% 居中，高度的 80% 居中）
+  const x = e.clientX;
+  const y = e.clientY;
   const centerX = window.innerWidth * 0.3;
   const centerY = window.innerHeight * 0.3;
   const centerWidth = window.innerWidth * 0.6;
@@ -61,39 +60,30 @@ provide("moveMethods", moveMethods);
 </script>
 
 <template>
-  <div class="img-container" style="background-color: --n-color">
+  <div class="reader-root">
     <TopDrawer />
-    <n-el
-      tag="body"
-      style="
-        color: var(--color) !important;
-        background-color: var(--bgc);
-        transition: 0.3s var(--cubic-bezier-ease-in-out);
-      "
-    >
+    <div class="reader-stage" @click="boxShow">
       <ComicReading
         v-if="bookInfo.ext.endsWith('cbz') || bookInfo.ext.endsWith('zip')"
         ref="containerRef"
-        @click="boxShow"
       />
-      <EpubReading
-        v-else-if="bookInfo.ext.endsWith('epub')"
-        ref="containerRef"
-        @click="boxShow"
-      />
-      <MobiReading
-        v-else-if="bookInfo.ext.endsWith('mobi')"
-        ref="containerRef"
-        @click="boxShow"
-      />
-    </n-el>
+      <EpubReading v-else-if="bookInfo.ext.endsWith('epub')" ref="containerRef" />
+      <MobiReading v-else-if="bookInfo.ext.endsWith('mobi')" ref="containerRef" />
+    </div>
     <BottomDrawer />
   </div>
 </template>
 
 <style scoped>
-.img-container {
-  display: flex;
-  flex-direction: column;
+.reader-root {
+  position: relative;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bgc, #0b0b0e);
+  transition: background-color 0.3s var(--ease-in-out);
+}
+
+.reader-stage {
+  display: contents;
 }
 </style>

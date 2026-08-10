@@ -10,6 +10,8 @@ const cssVars = useBooks().cssVarsData;
 
 const loadEPUB = async (bookPath) => {
   book.value = await getEPUB(bookPath);
+  console.log(book.value);
+
   for (const section of book.value.sections) {
     const doc = await section.createDocument();
     doc.body.setAttribute("flag", section.id.split("/")[1]);

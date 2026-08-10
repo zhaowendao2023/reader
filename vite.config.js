@@ -4,14 +4,12 @@ import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite';
 import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
 import { resolve } from 'path'
-import tailwindcss from '@tailwindcss/vite'
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [
     vue(),
-    tailwindcss(),
     AutoImport({
       imports: [
         'vue',

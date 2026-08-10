@@ -1,25 +1,21 @@
 export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
     const cache = new Map()
-    const urls = new Map()
     const load = async name => {
         if (cache.has(name)) return cache.get(name)
         const src = URL.createObjectURL(await loadBlob(name))
-        const page = URL.createObjectURL(
-            new Blob([`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin: 0"><img src="${src}"></body></html>`], { type: 'text/html' }))
-        urls.set(name, [src, page])
-        cache.set(name, page)
+        cache.set(name, src)
         return src
     }
     const unload = name => {
-        urls.get(name)?.forEach?.(url => URL.revokeObjectURL(url))
-        urls.delete(name)
+        const url = cache.get(name)
+        if (url) URL.revokeObjectURL(url)
         cache.delete(name)
     }
 
     const exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.jxl', '.avif']
     const files = entries
         .map(entry => entry.filename)
-        .filter(name => exts.some(ext => name.endsWith(ext)))
+        .filter(name => exts.some(ext => name.toLowerCase().endsWith(ext)))
         .sort()
     if (!files.length) throw new Error('No supported image files in archive')
 
@@ -39,8 +35,8 @@ export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
     book.splitTOCHref = href => [href, null]
     book.getTOCFragment = doc => doc.documentElement
     book.destroy = () => {
-        for (const arr of urls.values())
-            for (const url of arr) URL.revokeObjectURL(url)
+        for (const url of cache.values()) URL.revokeObjectURL(url)
+        cache.clear()
     }
     return book
 }
