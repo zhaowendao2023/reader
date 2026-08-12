@@ -134,16 +134,17 @@ try {
     exts: [...document.querySelectorAll('.fav-page .book-ext')].map(n => n.textContent.trim())
   })`);
   if (
-    folderItems.count === 6 &&
-    folderItems.names.some((n) => n.includes("Making Of.mp4")) &&
+    folderItems.count === 7 &&
+    folderItems.names.some((n) => n.includes("Test Series 1 - Vol 01")) &&
+    folderItems.names.some((n) => n === "Comics") &&
     folderItems.names.some((n) => n.includes("Art Pack.jpg")) &&
-    folderItems.exts.includes("MP4")
+    folderItems.exts.includes("2 集")
   )
     pass("shelf-folder-media", folderItems);
   else fail("shelf-folder-media", folderItems);
 
-  // 点击视频 → 播放器（含播放列表）
-  await evalJs(`[...document.querySelectorAll('.fav-page .book-cell')].find(n => n.textContent.includes('Making Of.mp4'))?.click(); true`);
+  // 点击视频系列卡片 → 播放器（含播放列表）
+  await evalJs(`[...document.querySelectorAll('.fav-page .book-cell')].find(n => n.textContent.includes('集'))?.click(); true`);
   await waitFor(`!!document.querySelector('.video-page .bar-seek .seek')`);
   await sleep(900);
   const player = await evalJs(`({

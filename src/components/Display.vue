@@ -22,16 +22,31 @@ const loading = ref(false);
 const loadCount = async (dir) => {
   if (counts[dir.path] !== undefined) return;
   try {
-    const list = await readDir(dir.path);
-    const n = list.filter(
-      (e) =>
-        e.isFile &&
-        (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))
-    ).length;
-    counts[dir.path] = n;
+    counts[dir.path] = await countFolder(dir.path, 0);
   } catch (error) {
     counts[dir.path] = 0;
   }
+};
+
+// 递归统计收藏夹内的漫画/视频/图包数量
+const countFolder = async (base, depth) => {
+  if (depth > 12) return 0;
+  let raw;
+  try {
+    raw = await readDir(base);
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const e of raw) {
+    if (e.name.startsWith(".")) continue;
+    if (e.isDirectory) {
+      n += await countFolder(joinPath(base, e.name), depth + 1);
+    } else if (e.isFile && (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))) {
+      n++;
+    }
+  }
+  return n;
 };
 
 watch(
@@ -59,21 +74,9 @@ const openDir = async (dir) => {
   loading.value = true;
   books.value = [];
   try {
-    const raw = await readDir(dir.path);
-    const list = [];
-    for (const e of raw) {
-      if (e.name.startsWith(".")) continue;
-      const ext = extOf(e.name);
-      if (e.isFile && (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))) {
-        list.push({
-          name: e.name,
-          key: canonKey(joinPath(dir.path, e.name)),
-          path: joinPath(dir.path, e.name),
-          ext,
-          kind: isComicFile(e.name) ? "comic" : isVideo(e.name) ? "video" : "image",
-        });
-      }
-    }
+    const acc = { comics: [], packs: new Map(), images: [] };
+    await collectFolder(dir.path, 0, acc);
+    const list = [...acc.comics, ...acc.packs.values(), ...acc.images];
     list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true }));
     books.value = list;
   } catch (error) {
@@ -81,6 +84,60 @@ const openDir = async (dir) => {
   } finally {
     loading.value = false;
     observeCovers();
+  }
+};
+
+// 递归打平收藏夹：漫画单本全量列出，视频按目录聚成系列，图包单文件
+const collectFolder = async (base, depth, acc) => {
+  if (depth > 12) return;
+  let raw;
+  try {
+    raw = await readDir(base);
+  } catch {
+    return;
+  }
+  for (const e of raw) {
+    if (e.name.startsWith(".")) continue;
+    const full = joinPath(base, e.name);
+    if (e.isDirectory) {
+      await collectFolder(full, depth + 1, acc);
+    } else if (e.isFile) {
+      if (isComicFile(e.name)) {
+        acc.comics.push({
+          name: e.name,
+          key: canonKey(full),
+          path: full,
+          ext: extOf(e.name),
+          kind: "comic",
+        });
+      } else if (isVideo(e.name)) {
+        const pk = canonKey(base);
+        let pack = acc.packs.get(pk);
+        if (!pack) {
+          const dirName = base.split(/[\\/]/).filter(Boolean).pop() || base;
+          pack = {
+            name: dirName,
+            key: pk,
+            path: base,
+            dir: base,
+            ext: "video",
+            kind: "video-folder",
+            count: 0,
+          };
+          acc.packs.set(pk, pack);
+        }
+        pack.count++;
+      } else if (isImage(e.name)) {
+        acc.images.push({
+          name: e.name,
+          key: canonKey(full),
+          path: full,
+          ext: extOf(e.name),
+          kind: "image",
+          dir: base,
+        });
+      }
+    }
   }
 };
 
@@ -132,7 +189,7 @@ const openImage = async (item) => {
 };
 
 const openBook = (book) => {
-  if (book.kind === "video") return openVideo(book);
+  if (book.kind === "video" || book.kind === "video-folder") return openVideo(book);
   if (book.kind === "image") return openImage(book);
   return openComic(book);
 };
@@ -250,12 +307,20 @@ const plateStyles = [
               decoding="async"
             />
             <span v-else class="book-cover-ph">
-              <Icon :id="book.kind === 'video' ? 'play' : book.kind === 'image' ? 'image' : 'book-open'" :size="34" />
+              <Icon
+                :id="book.kind === 'video' || book.kind === 'video-folder' ? 'play' : book.kind === 'image' ? 'image' : 'book-open'"
+                :size="34"
+              />
             </span>
-            <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
+            <span class="book-ext mono">
+              {{ book.kind === "video-folder" ? book.count + " 集" : book.ext.toUpperCase() }}
+            </span>
             <span v-if="book.kind !== 'comic'" class="media-overlay">
-              <span class="media-glyph" :class="{ video: book.kind === 'video' }">
-                <Icon :id="book.kind === 'video' ? 'play' : 'scan'" :size="20" />
+              <span
+                class="media-glyph"
+                :class="{ video: book.kind === 'video' || book.kind === 'video-folder' }"
+              >
+                <Icon :id="book.kind === 'video' || book.kind === 'video-folder' ? 'play' : 'scan'" :size="20" />
               </span>
             </span>
           </div>
