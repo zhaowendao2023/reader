@@ -1,11 +1,13 @@
 <script setup>
 import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
-import { covers, canonKey, enqueueCover } from "../store/browserCache";
+import { useUI } from "../store/ui";
+import { covers, canonKey, enqueueCover, prefetchCovers, stopPrefetch } from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
 import Icon from "./Icon.vue";
 
 const booksStore = useBooks();
+const ui = useUI();
 const router = useRouter();
 const favoriteDirs = computed(() => booksStore.favoriteDirs);
 const counts = reactive({});
@@ -77,8 +79,21 @@ const openDir = async (dir) => {
 const backToFavs = () => {
   currentDir.value = null;
   books.value = [];
+  savedScroll = 0;
   coverObserver?.disconnect();
+  stopPrefetch();
 };
+
+// 侧边栏点击「收藏」：直接回到收藏文件夹总览
+watch(
+  () => ui.navReset,
+  () => {
+    backToFavs();
+    nextTick(() => {
+      if (pageRef.value) pageRef.value.scrollTop = 0;
+    });
+  }
+);
 
 const openBook = async (book) => {
   const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
@@ -87,7 +102,7 @@ const openBook = async (book) => {
     const title = book.name.slice(0, book.name.lastIndexOf("."));
     await booksStore.addBook({ [id]: { title, path: key, ext: book.ext } });
   }
-  router.push(`/reading/${id}`);
+  router.push({ path: `/reading/${id}`, query: { back: "shelf" } });
 };
 
 const removeDir = async (dir) => {
@@ -124,6 +139,7 @@ const observeCovers = async () => {
     { rootMargin: "300px" }
   );
   for (const node of nodes) coverObserver.observe(node);
+  prefetchCovers(books.value.map((b) => b.key));
 };
 
 watch(books, () => observeCovers());
@@ -139,9 +155,15 @@ onActivated(() => {
   observeCovers();
 });
 
+onDeactivated(() => {
+  coverObserver?.disconnect();
+  stopPrefetch();
+});
+
 onUnmounted(() => {
   pageRef.value?.removeEventListener("scroll", onPageScroll);
   coverObserver?.disconnect();
+  stopPrefetch();
 });
 
 const totalBooks = computed(() =>
@@ -211,8 +233,8 @@ const plateStyles = [
     <template v-else>
       <section class="shelf-hero reveal">
         <div class="hero-titles">
-          <div class="kicker">01 / LIBRARY · 阅览室</div>
-          <h1 class="hero-title">书架</h1>
+          <div class="kicker">02 / COLLECTION · 收藏</div>
+          <h1 class="hero-title">收藏</h1>
           <p class="hero-sub">朝闻道 · 私人阅读档案</p>
         </div>
         <div class="hero-meta mono">
@@ -223,11 +245,11 @@ const plateStyles = [
       </section>
 
       <div v-if="!favoriteDirs.length" class="empty-state">
-        <Icon id="library" :size="40" />
-        <p class="empty-title">书架空空如也</p>
-        <p class="empty-sub">前往「文件」视图浏览漫画并收藏文件夹</p>
+        <Icon id="star" :size="40" />
+        <p class="empty-title">还没有收藏</p>
+        <p class="empty-sub">前往「文件夹预览」浏览漫画文件夹，点亮收藏后会出现在这里</p>
         <button class="empty-cta" @click="router.push('/browse')">
-          <span>去浏览</span>
+          <span>去文件夹预览</span>
           <Icon id="arrow-right" :size="15" />
         </button>
       </div>

@@ -4,7 +4,7 @@
     <aside class="nav-rail" :class="{ 'is-collapsed': collapsed }">
       <div class="rail-inner">
         <div class="brand">
-          <button class="brand-mark" title="返回书架" @click="router.push('/')">
+          <button class="brand-mark" title="返回主界面" @click="handleMenuSelect('home')">
             <Icon id="book-open" :size="20" :stroke-width="2" />
           </button>
           <div class="brand-name" :class="{ hidden: collapsed }">
@@ -46,7 +46,10 @@
       <Header />
       <div class="view-stage">
         <keep-alive>
-          <Display v-if="route.path === '/'" />
+          <Home v-if="route.path === '/'" />
+        </keep-alive>
+        <keep-alive>
+          <Display v-if="route.path === '/shelf'" />
         </keep-alive>
         <keep-alive>
           <FileBrowser v-if="route.path === '/browse'" />
@@ -58,6 +61,7 @@
 <script setup>
 defineOptions({ name: "LayOut" });
 import Icon from "./Icon.vue";
+import Home from "./Home.vue";
 import Display from "./Display.vue";
 import FileBrowser from "./FileBrowser.vue";
 import { useUI } from "../store/ui";
@@ -73,15 +77,22 @@ const collapsed = computed(() => ui.siderCollapsed);
 const themeIcon = computed(() => (booksStore.theme ? "sun" : "moon"));
 
 const navItems = [
-  { label: "书架", key: "shelf", icon: "library", index: "01" },
-  { label: "文件", key: "browse", icon: "folder", index: "02" },
+  { label: "主界面", key: "home", icon: "home", index: "01" },
+  { label: "收藏", key: "shelf", icon: "star", index: "02" },
+  { label: "文件夹预览", key: "browse", icon: "folder", index: "03" },
 ];
 
-const menuValue = computed(() => (route.path === "/browse" ? "browse" : "shelf"));
+const menuValue = computed(() => {
+  if (route.path === "/shelf") return "shelf";
+  if (route.path === "/browse") return "browse";
+  return "home";
+});
 
 const handleMenuSelect = (key) => {
-  if (key === "shelf") router.push("/");
-  else if (key === "browse") router.push("/browse");
+  const target = key === "home" ? "/" : key === "shelf" ? "/shelf" : "/browse";
+  // 已在该路由也触发一次 reset，让视图直接回到本栏目的主界面
+  if (route.path !== target) router.push(target);
+  ui.resetView();
 };
 </script>
 
@@ -109,7 +120,7 @@ const handleMenuSelect = (key) => {
   flex-direction: column;
   background: var(--bg-1);
   border-right: 1px solid var(--line);
-  transition: width 0.32s var(--ease-out);
+  transition: width 0.24s var(--ease-out);
   overflow: hidden;
   will-change: width;
 }
@@ -142,7 +153,7 @@ const handleMenuSelect = (key) => {
   color: var(--text-1);
   background: linear-gradient(140deg, var(--accent-soft), transparent 60%);
   cursor: pointer;
-  transition: all 0.35s var(--ease-spring);
+  transition: transform 0.25s var(--ease-out), border-color 0.25s var(--ease-out), color 0.25s, box-shadow 0.25s var(--ease-out);
   position: relative;
   overflow: hidden;
 
@@ -161,7 +172,7 @@ const handleMenuSelect = (key) => {
   overflow: hidden;
   white-space: nowrap;
   max-width: 180px;
-  transition: opacity 0.18s, transform 0.25s var(--ease-out), max-width 0.25s var(--ease-out);
+  transition: opacity 0.15s, transform 0.2s var(--ease-out), max-width 0.2s var(--ease-out);
 
   &.hidden {
     opacity: 0;
@@ -310,7 +321,7 @@ const handleMenuSelect = (key) => {
   bottom: 0;
   left: var(--rail-w);
   overflow: hidden;
-  transition: left 0.32s var(--ease-out);
+  transition: left 0.24s var(--ease-out);
   background: var(--bg-0);
   will-change: left;
 }

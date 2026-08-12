@@ -21,6 +21,8 @@
       { name: "Test Series 1", isDir: true },
       { name: "Test Series 2.cbz", isDir: false, ref: "testbook3" },
       { name: "Novel.epub", isDir: false, ref: "epub" },
+      { name: "Making Of.mp4", isDir: false, ref: null },
+      { name: "Art Pack.jpg", isDir: false, ref: null },
     ],
     "f:\\comics\\test series 1": [
       { name: "Test Series 1 - Vol 01.cbz", isDir: false, ref: "testbook" },
@@ -29,6 +31,15 @@
     "f:\\documents": [],
     "f:\\manga": [{ name: "Other Book.cbz", isDir: false, ref: "testbook2" }],
   };
+
+  if (window.__PREFETCH_TEST_FILES__) {
+    const extra = [];
+    const count = Number(window.__PREFETCH_TEST_FILES__) || 0;
+    for (let i = 1; i <= count; i++) {
+      extra.push({ name: `Prefetch Vol ${String(i).padStart(3, "0")}.cbz`, isDir: false, ref: "testbook" });
+    }
+    FS["f:\\comics"] = [...FS["f:\\comics"], ...extra];
+  }
 
   // 懒加载字节
   const bytesCache = new Map();
@@ -59,7 +70,10 @@
     books: {},
     cssVars: { fontSize: 16, marginBottom: 1.5, letterSpacing: 2, lineHeight: 1.6 },
     theme: true,
-    favoriteDirs: [{ path: "F:\\Comics", name: "Comics" }],
+    favoriteDirs: [
+      { path: "F:\\Comics", name: "Comics" },
+      { path: "F:\\Manga", name: "Manga" },
+    ],
     mobileRoot: null,
   };
 

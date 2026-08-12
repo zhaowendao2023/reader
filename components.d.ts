@@ -15,9 +15,11 @@ declare module 'vue' {
     EpubReading: typeof import('./src/components/EpubReading.vue')['default']
     FileBrowser: typeof import('./src/components/FileBrowser.vue')['default']
     Header: typeof import('./src/components/Header.vue')['default']
+    Home: typeof import('./src/components/Home.vue')['default']
     Icon: typeof import('./src/components/Icon.vue')['default']
     LayOut: typeof import('./src/components/LayOut.vue')['default']
     MobiReading: typeof import('./src/components/MobiReading.vue')['default']
+    MpvTest: typeof import('./src/components/MpvTest.vue')['default']
     NConfigProvider: typeof import('naive-ui')['NConfigProvider']
     NDropdown: typeof import('naive-ui')['NDropdown']
     NEllipsis: typeof import('naive-ui')['NEllipsis']
@@ -29,5 +31,6 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     TopDrawer: typeof import('./src/components/TopDrawer.vue')['default']
+    VideoPlayer: typeof import('./src/components/VideoPlayer.vue')['default']
   }
 }

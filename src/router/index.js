@@ -3,12 +3,17 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 // 定义路由规则
 const routes = [
   {
-    path: '/',          // 封面页路径
-    name: 'Cover',
+    path: '/',          // 主界面（全量聚合中心）
+    name: 'Home',
     component: () => import('@/components/LayOut.vue') // 封面组件
   },
   {
-    path: '/browse',         // 文件浏览页路径
+    path: '/shelf',         // 收藏（分门别类的书架）
+    name: 'Shelf',
+    component: () => import('@/components/LayOut.vue')
+  },
+  {
+    path: '/browse',         // 文件夹预览（资源管理器）
     name: 'Browse',
     component: () => import('@/components/LayOut.vue')
   },
@@ -16,6 +21,16 @@ const routes = [
     path: '/reading/:id',    // 阅读页路径
     name: 'Reading',
     component: () => import('@/components/Reading.vue') // 阅读组件
+  },
+  {
+    path: '/mpv-test',
+    name: 'MpvTest',
+    component: () => import('@/components/MpvTest.vue')
+  },
+  {
+    path: '/video/:id',
+    name: 'VideoPlayer',
+    component: () => import('@/components/VideoPlayer.vue')
   }
 ]
 

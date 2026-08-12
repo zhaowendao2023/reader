@@ -2,13 +2,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
-import { covers, coverFailed, dirCache, getDrivesCache, setDrivesCache, enqueueCover, canonKey } from "../store/browserCache";
+import { useUI } from "../store/ui";
+import {
+  covers,
+  coverFailed,
+  dirCache,
+  getDrivesCache,
+  setDrivesCache,
+  enqueueCover,
+  canonKey,
+  prefetchCovers,
+  stopPrefetch,
+} from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
+import { extOf, isVideo } from "../utils/media";
 import Icon from "./Icon.vue";
 
 const router = useRouter();
 const route = useRoute();
 const booksStore = useBooks();
+const ui = useUI();
 
 const COMIC_EXTS = ["cbz", "zip", "epub", "mobi"];
 
@@ -21,6 +34,13 @@ const loading = ref(false);
 
 // 视图模式：auto = 收藏夹用网格，否则列表
 const view = ref("auto");
+const isFavorite = computed(() => {
+  if (!current.value) return false;
+  const key = booksStore.platform === "windows" ? current.value.key.toLowerCase() : current.value.key;
+  return booksStore.favoriteDirs.some((d) =>
+    booksStore.platform === "windows" ? d.path.toLowerCase() === key : d.path === current.value.key
+  );
+});
 const effectiveView = computed(() =>
   view.value === "auto" ? (isFavorite.value ? "grid" : "list") : view.value
 );
@@ -79,13 +99,15 @@ const loadDir = async (key) => {
       if (e.name.startsWith(".")) continue;
       if (e.isDirectory) {
         dirs.push({ name: e.name, key: joinPath(key, e.name), isDir: true });
-      } else if (isComicFile(e.name)) {
+      } else if (isComicFile(e.name) || isVideo(e.name)) {
         const entryKey = canonKey(joinPath(key, e.name));
         const entry = {
           name: e.name,
           key: entryKey,
+          path: joinPath(key, e.name),
           isDir: false,
-          ext: e.name.slice(e.name.lastIndexOf(".") + 1).toLowerCase(),
+          ext: extOf(e.name),
+          kind: isVideo(e.name) ? "video" : "comic",
         };
         files.push(entry);
       }
@@ -124,6 +146,18 @@ const enterRoot = async () => {
   view.value = "auto";
   await loadRoot();
 };
+
+// 侧边栏点击「文件夹预览」：直接回到根目录（驱动器列表）
+watch(
+  () => ui.navReset,
+  () => {
+    savedScroll = 0;
+    enterRoot();
+    nextTick(() => {
+      if (scrollRef.value) scrollRef.value.scrollTop = 0;
+    });
+  }
+);
 
 const goUp = async () => {
   if (!history.value.length) return;
@@ -181,6 +215,12 @@ onActivated(() => {
   nextTick(() => {
     if (scrollRef.value && savedScroll) scrollRef.value.scrollTop = savedScroll;
   });
+  observeCovers();
+});
+
+onDeactivated(() => {
+  coverObserver?.disconnect();
+  stopPrefetch();
 });
 
 let coverObserver = null;
@@ -196,6 +236,7 @@ const observeCovers = async () => {
       for (const item of list) {
         if (!item.isIntersecting) continue;
         const key = item.target.dataset.key;
+        if (item.target.dataset.kind === "video") continue;
         coverObserver?.unobserve(item.target);
         if (observedCovers.has(key)) continue;
         observedCovers.add(key);
@@ -205,18 +246,17 @@ const observeCovers = async () => {
     { rootMargin: "300px" }
   );
   for (const node of nodes) coverObserver.observe(node);
+  prefetchCovers(
+    entries.value.filter((e) => !e.isDir && e.kind !== "video").map((e) => e.key)
+  );
 };
 
 watch(entries, () => {
   observeCovers();
 });
 
-const isFavorite = computed(() => {
-  if (!current.value) return false;
-  const key = booksStore.platform === "windows" ? current.value.key.toLowerCase() : current.value.key;
-  return booksStore.favoriteDirs.some((d) =>
-    booksStore.platform === "windows" ? d.path.toLowerCase() === key : d.path === current.value.key
-  );
+watch(effectiveView, () => {
+  observeCovers();
 });
 
 const toggleFavorite = async () => {
@@ -228,7 +268,25 @@ const toggleFavorite = async () => {
   }
 };
 
+const openVideo = async (entry) => {
+  const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
+  const id = await calculateHash(key);
+  router.push({
+    path: `/video/${id}`,
+    query: { path: entry.path || entry.key, name: entry.name },
+  });
+};
+
+const entryIcon = (entry) => {
+  if (entry.isDir) return "folder";
+  return entry.kind === "video" ? "play" : "book-open";
+};
+
 const openBook = async (entry) => {
+  if (entry.kind === "video") {
+    await openVideo(entry);
+    return;
+  }
   const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
   const id = await calculateHash(key);
   if (!booksStore.getBook(id)) {
@@ -280,6 +338,7 @@ const openPath = async (q) => {
 onUnmounted(() => {
   scrollRef.value?.removeEventListener("scroll", onScroll);
   coverObserver?.disconnect();
+  stopPrefetch();
 });
 
 onMounted(async () => {
@@ -362,10 +421,11 @@ watch(
           class="entry reveal"
           :style="{ animationDelay: `${Math.min(i * 24, 400)}ms` }"
           :data-key="entry.key"
+          :data-kind="entry.isDir ? 'dir' : entry.kind"
           @click="entry.isDir ? enter(entry) : openBook(entry)"
         >
           <span class="entry-ico" :class="{ dir: entry.isDir }">
-            <Icon :id="entry.isDir ? 'folder' : 'book-open'" :size="19" />
+            <Icon :id="entryIcon(entry)" :size="19" />
           </span>
           <img v-if="!entry.isDir && covers[entry.key]" :src="covers[entry.key]" class="entry-cover" alt="" loading="lazy" decoding="async" />
           <span class="entry-name">{{ entry.name }}</span>
@@ -381,12 +441,13 @@ watch(
           class="grid-card reveal"
           :style="{ animationDelay: `${Math.min(i * 40, 500)}ms` }"
           :data-key="entry.key"
+          :data-kind="entry.isDir ? 'dir' : entry.kind"
           @click="entry.isDir ? enter(entry) : openBook(entry)"
         >
           <div class="grid-cover-wrap">
             <img v-if="!entry.isDir && covers[entry.key]" :src="covers[entry.key]" class="grid-cover" alt="" loading="lazy" decoding="async" />
             <span v-else class="grid-icon" :class="{ dir: entry.isDir }">
-              <Icon :id="entry.isDir ? 'folder' : 'book-open'" :size="38" :stroke-width="1.75" />
+              <Icon :id="entryIcon(entry)" :size="38" :stroke-width="1.75" />
             </span>
             <span v-if="!entry.isDir" class="grid-ext mono">{{ entry.ext.toUpperCase() }}</span>
           </div>
@@ -396,7 +457,7 @@ watch(
 
       <div v-if="!loading && !entries.length" class="browser-hint empty">
         <Icon id="folder-open" :size="34" />
-        <span>这个文件夹里没有漫画</span>
+        <span>这个文件夹里没有漫画或视频</span>
       </div>
     </template>
   </div>
@@ -541,6 +602,9 @@ watch(
   cursor: pointer;
   border: 1px solid transparent;
   transition: all 0.25s var(--ease-out);
+  /* 屏外条目跳过布局/绘制，侧栏伸缩、大量条目时避免整屏 reflow */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 66px;
 
   &:hover {
     background: var(--panel);
@@ -628,6 +692,9 @@ watch(
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  /* 屏外卡片跳过布局/绘制：侧栏伸缩、封面批量加载时不再整屏 reflow */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
 }
 
 .grid-cover-wrap {

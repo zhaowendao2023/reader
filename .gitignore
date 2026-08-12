@@ -32,3 +32,4 @@ src-tauri/gen
 # UI 浏览器调试产物
 scripts/chrome-profile/
 scripts/*.png
+scripts/.cdp-chrome/
