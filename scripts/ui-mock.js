@@ -10,7 +10,14 @@
   };
 
   // 虚拟文件系统：key 为规范化目录路径（小写反斜杠）
-  const bytesRef = { testbook: "/scripts/testbook.cbz", testbook2: "/scripts/testbook2.cbz", testbook3: "/scripts/testbook3.cbz", epub: "/scripts/testbook.epub" };
+  const bytesRef = {
+    testbook: "/scripts/testbook.cbz",
+    testbook2: "/scripts/testbook2.cbz",
+    testbook3: "/scripts/testbook3.cbz",
+    epub: "/scripts/testbook.epub",
+    artpack: "/scripts/art-pack.png",
+    artcover: "/scripts/art-cover.png",
+  };
   const FS = {
     "f:": [
       { name: "Comics", isDir: true },
@@ -22,7 +29,9 @@
       { name: "Test Series 2.cbz", isDir: false, ref: "testbook3" },
       { name: "Novel.epub", isDir: false, ref: "epub" },
       { name: "Making Of.mp4", isDir: false, ref: null },
-      { name: "Art Pack.jpg", isDir: false, ref: null },
+      { name: "Making Of 2.mp4", isDir: false, ref: null },
+      { name: "Art Pack.jpg", isDir: false, ref: "artpack" },
+      { name: "Cover Art.png", isDir: false, ref: "artcover" },
     ],
     "f:\\comics\\test series 1": [
       { name: "Test Series 1 - Vol 01.cbz", isDir: false, ref: "testbook" },
@@ -79,6 +88,17 @@
 
   const callbacks = new Map();
   let cbSeq = 1;
+
+  // ===== mpv 假状态：浏览器里也能完整渲染播放器 UI =====
+  const mpvState = {
+    playing: true,
+    paused: false,
+    position: 0,
+    duration: 342.0,
+    path: "",
+    codec: "h264",
+  };
+  let mpvLastTick = Date.now();
 
   const invoke = async (cmd, args = {}, options = {}) => {
     switch (cmd) {
@@ -242,6 +262,40 @@
       case "plugin:event|listen":
       case "plugin:event|unlisten":
       case "plugin:resources|close":
+        return null;
+
+      // ===== mpv =====
+      case "mpv_play":
+        mpvState.playing = true;
+        mpvState.paused = false;
+        mpvState.position = 0;
+        mpvState.duration = 342.0;
+        mpvState.path = args.path || "";
+        mpvLastTick = Date.now();
+        return null;
+      case "mpv_pause":
+        mpvState.paused = !!args.paused;
+        return null;
+      case "mpv_seek":
+        mpvState.position = Math.max(0, Number(args.seconds) || 0);
+        return null;
+      case "mpv_get_state": {
+        const now = Date.now();
+        // 模拟播放推进（30x，便于截图看到进度条填充）
+        if (mpvState.playing && !mpvState.paused) {
+          mpvState.position = Math.min(
+            mpvState.duration,
+            mpvState.position + ((now - mpvLastTick) / 1000) * 30
+          );
+        }
+        mpvLastTick = now;
+        return JSON.parse(JSON.stringify(mpvState));
+      }
+      case "mpv_set_bounds":
+      case "mpv_stop":
+      case "mpv_stop_all":
+      case "mpv_release":
+      case "mpv_pool_info":
         return null;
 
       default:

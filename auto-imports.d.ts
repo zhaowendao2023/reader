@@ -7,10 +7,9 @@
 export {}
 declare global {
   const EffectScope: typeof import('vue')['EffectScope']
-  const NTooltip: typeof import('naive-ui')['NTooltip']
-  const __dbgBook: typeof import('./src/utils/bookData.js')['__dbgBook']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
   const calculateHash: typeof import('./src/utils/utils.js')['calculateHash']
+  const cleanupLegacyCoverCache: typeof import('./src/utils/bookData.js')['cleanupLegacyCoverCache']
   const clearCoverCache: typeof import('./src/utils/bookData.js')['clearCoverCache']
   const clearLoadDate: typeof import('./src/utils/bookData.js')['clearLoadDate']
   const computed: typeof import('vue')['computed']
@@ -22,6 +21,7 @@ declare global {
   const defineStore: typeof import('pinia')['defineStore']
   const deleteFileData: typeof import('./src/utils/bookData.js')['deleteFileData']
   const effectScope: typeof import('vue')['effectScope']
+  const ensureCoverCache: typeof import('./src/utils/bookData.js')['ensureCoverCache']
   const getActivePinia: typeof import('pinia')['getActivePinia']
   const getBookCover: typeof import('./src/utils/bookData.js')['getBookCover']
   const getBookInfo: typeof import('./src/utils/bookData.js')['getBookInfo']

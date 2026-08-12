@@ -15,7 +15,7 @@ import {
   stopPrefetch,
 } from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
-import { extOf, isVideo } from "../utils/media";
+import { extOf, isVideo, isImage } from "../utils/media";
 import Icon from "./Icon.vue";
 
 const router = useRouter();
@@ -107,7 +107,7 @@ const loadDir = async (key) => {
           path: joinPath(key, e.name),
           isDir: false,
           ext: extOf(e.name),
-          kind: isVideo(e.name) ? "video" : "comic",
+        kind: isVideo(e.name) ? "video" : isImage(e.name) ? "image" : "comic",
         };
         files.push(entry);
       }
@@ -273,18 +273,33 @@ const openVideo = async (entry) => {
   const id = await calculateHash(key);
   router.push({
     path: `/video/${id}`,
-    query: { path: entry.path || entry.key, name: entry.name },
+    query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name, playlist: "1" },
+  });
+};
+
+const openImage = async (entry) => {
+  const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
+  const id = await calculateHash(key);
+  router.push({
+    path: `/media/${id}`,
+    query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name },
   });
 };
 
 const entryIcon = (entry) => {
   if (entry.isDir) return "folder";
-  return entry.kind === "video" ? "play" : "book-open";
+  if (entry.kind === "video") return "play";
+  if (entry.kind === "image") return "image";
+  return "book-open";
 };
 
 const openBook = async (entry) => {
   if (entry.kind === "video") {
     await openVideo(entry);
+    return;
+  }
+  if (entry.kind === "image") {
+    await openImage(entry);
     return;
   }
   const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;

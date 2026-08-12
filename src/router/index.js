@@ -31,6 +31,11 @@ const routes = [
     path: '/video/:id',
     name: 'VideoPlayer',
     component: () => import('@/components/VideoPlayer.vue')
+  },
+  {
+    path: '/media/:id',
+    name: 'MediaViewer',
+    component: () => import('@/components/MediaViewer.vue')
   }
 ]
 

@@ -4,6 +4,7 @@ import { useBooks } from "../store/loadBooks";
 import { useUI } from "../store/ui";
 import { covers, canonKey, enqueueCover, prefetchCovers, stopPrefetch } from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
+import { extOf, isVideo, isImage } from "../utils/media";
 import Icon from "./Icon.vue";
 
 const booksStore = useBooks();
@@ -22,7 +23,11 @@ const loadCount = async (dir) => {
   if (counts[dir.path] !== undefined) return;
   try {
     const list = await readDir(dir.path);
-    const n = list.filter((e) => e.isFile && /\.(cbz|zip|epub|mobi)$/i.test(e.name)).length;
+    const n = list.filter(
+      (e) =>
+        e.isFile &&
+        (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))
+    ).length;
     counts[dir.path] = n;
   } catch (error) {
     counts[dir.path] = 0;
@@ -58,11 +63,14 @@ const openDir = async (dir) => {
     const list = [];
     for (const e of raw) {
       if (e.name.startsWith(".")) continue;
-      if (e.isFile && isComicFile(e.name)) {
+      const ext = extOf(e.name);
+      if (e.isFile && (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))) {
         list.push({
           name: e.name,
           key: canonKey(joinPath(dir.path, e.name)),
-          ext: e.name.slice(e.name.lastIndexOf(".") + 1).toLowerCase(),
+          path: joinPath(dir.path, e.name),
+          ext,
+          kind: isComicFile(e.name) ? "comic" : isVideo(e.name) ? "video" : "image",
         });
       }
     }
@@ -95,7 +103,7 @@ watch(
   }
 );
 
-const openBook = async (book) => {
+const openComic = async (book) => {
   const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
   const id = await calculateHash(key);
   if (!booksStore.getBook(id)) {
@@ -103,6 +111,30 @@ const openBook = async (book) => {
     await booksStore.addBook({ [id]: { title, path: key, ext: book.ext } });
   }
   router.push({ path: `/reading/${id}`, query: { back: "shelf" } });
+};
+
+const openVideo = async (item) => {
+  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
+  const id = await calculateHash(key);
+  router.push({
+    path: `/video/${id}`,
+    query: { dir: item.dir || currentDir.value?.path, path: item.path || item.key, name: item.name, playlist: "1" },
+  });
+};
+
+const openImage = async (item) => {
+  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
+  const id = await calculateHash(key);
+  router.push({
+    path: `/media/${id}`,
+    query: { dir: item.dir || currentDir.value?.path, path: item.path || item.key, name: item.name },
+  });
+};
+
+const openBook = (book) => {
+  if (book.kind === "video") return openVideo(book);
+  if (book.kind === "image") return openImage(book);
+  return openComic(book);
 };
 
 const removeDir = async (dir) => {
@@ -192,7 +224,9 @@ const plateStyles = [
           <div class="kicker">COLLECTION / {{ String(favoriteDirs.findIndex(d => d.name === currentDir.name) + 1).padStart(2, "0") }}</div>
           <h1 class="hero-title">{{ currentDir.name }}</h1>
         </div>
-        <div class="hero-meta mono" v-if="!loading">{{ books.length }} 部作品</div>
+        <div class="hero-meta mono" v-if="!loading">
+          {{ books.length }} 个条目
+        </div>
       </section>
 
       <div v-if="loading" class="grid-loading">
@@ -206,17 +240,24 @@ const plateStyles = [
           :style="{ animationDelay: `${Math.min(i * 40, 500)}ms` }"
           @click="openBook(book)"
         >
-          <div class="book-cover" :data-key="book.key">
+          <div class="book-cover" :class="{ 'book-cover--media': book.kind !== 'comic' }" :data-key="book.key">
             <img
-              v-if="covers[book.key]"
+              v-if="book.kind === 'comic' && covers[book.key]"
               :src="covers[book.key]"
               class="book-cover-img"
               alt=""
               loading="lazy"
               decoding="async"
             />
-            <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
+            <span v-else class="book-cover-ph">
+              <Icon :id="book.kind === 'video' ? 'play' : book.kind === 'image' ? 'image' : 'book-open'" :size="34" />
+            </span>
             <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
+            <span v-if="book.kind !== 'comic'" class="media-overlay">
+              <span class="media-glyph" :class="{ video: book.kind === 'video' }">
+                <Icon :id="book.kind === 'video' ? 'play' : 'scan'" :size="20" />
+              </span>
+            </span>
           </div>
           <div class="book-name">
             <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
@@ -225,7 +266,7 @@ const plateStyles = [
       </ul>
       <div v-else class="empty-state">
         <Icon id="book-open" :size="36" />
-        <p>这个文件夹里没有漫画</p>
+        <p>这个文件夹里没有内容</p>
       </div>
     </template>
 
@@ -272,7 +313,7 @@ const plateStyles = [
           </button>
           <div class="plate-body">
             <div class="plate-name"><n-ellipsis :tooltip="false">{{ dir.name }}</n-ellipsis></div>
-            <div class="plate-count mono">{{ counts[dir.path] === undefined ? "…" : counts[dir.path] }} VOLUMES</div>
+            <div class="plate-count mono">{{ counts[dir.path] === undefined ? "…" : counts[dir.path] }} ENTRIES</div>
           </div>
         </li>
       </ul>
@@ -573,6 +614,50 @@ const plateStyles = [
   color: var(--text-3);
   display: grid;
   place-items: center;
+}
+
+.book-cover--media {
+  background:
+    radial-gradient(80% 60% at 30% 20%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%),
+    var(--bg-2);
+}
+
+.media-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 5, 8, 0.28);
+  opacity: 0;
+  transition: opacity 0.35s var(--ease-out);
+  backdrop-filter: blur(1.5px);
+}
+
+.media-glyph {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #fff;
+  transform: scale(0.82);
+  transition: transform 0.3s var(--ease-spring), background 0.3s;
+
+  &.video {
+    background: linear-gradient(135deg, #ff4d2e, #ff9a3d);
+    border: none;
+    box-shadow: 0 8px 26px rgba(255, 77, 46, 0.4);
+  }
+}
+
+.book-cell:hover .media-overlay {
+  opacity: 1;
+
+  .media-glyph {
+    transform: scale(1);
+  }
 }
 
 .book-ext {

@@ -80,6 +80,7 @@ const scanAll = async () => {
           path: joinPath(dir.path, e.name),
           ext,
           folder: dir.name,
+          dir: dir.path,
           kind: COMIC_EXTS.includes(ext) ? "comic" : isVideo(e.name) ? "video" : "image",
         };
         if (COMIC_EXTS.includes(ext)) comicMap.set(item.key, item);
@@ -159,9 +160,19 @@ const openVideoFolder = async (item) => {
   });
 };
 
+const openImage = async (item) => {
+  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
+  const id = await calculateHash(key);
+  router.push({
+    path: `/media/${id}`,
+    query: { dir: item.dir || item.path, path: item.path || item.key, name: item.name },
+  });
+};
+
 const openMedia = (item) => {
   if (item.kind === "video-folder") openVideoFolder(item);
   else if (isVideo(item.ext)) openVideo(item);
+  else openImage(item);
 };
 
 /* ===== 封面懒加载（与书架共用缓存队列） ===== */

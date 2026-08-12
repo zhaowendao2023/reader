@@ -95,10 +95,21 @@ try {
   const media = await evalJs(`({
     title: document.querySelector('.home-page .hero-title')?.textContent,
     count: document.querySelectorAll('.home-page .book-cell').length,
-    names: [...document.querySelectorAll('.home-page .book-name')].map(n => n.textContent.trim())
+    names: [...document.querySelectorAll('.home-page .book-name')].map(n => n.textContent.trim()),
+    extTags: [...document.querySelectorAll('.home-page .book-ext')].map(n => n.textContent.trim())
   })`);
-  if (media.title === "视频图包" && media.count === 2) pass("media", media);
+  if (media.title === "视频图包" && media.count === 3 && media.extTags.some((t) => t.includes("集")) && media.names.some((n) => n.includes("Art Pack")))
+    pass("media", media);
   else fail("media", media);
+
+  // ===== 主界面视频图包：视频系列卡片 + 图包卡片均可点 =====
+  await evalJs(`[...document.querySelectorAll('.home-page .book-cell')].find(n => n.textContent.includes('Art Pack'))?.click(); true`);
+  const mediaViewerFromHome = await waitFor(`!!document.querySelector('.media-page img') && document.querySelector('.media-page img').src.startsWith('blob:')`);
+  if (mediaViewerFromHome && (await evalJs(`document.querySelector('.media-page .pill-count')?.textContent.trim()`)) === "1 / 2")
+    pass("media-viewer-home", "主界面图包卡片点击进入图包查看器");
+  else fail("media-viewer-home", "图包查看器未打开");
+  await evalJs(`history.back(); true`);
+  await waitFor(`document.querySelector('.home-page .hero-title')?.textContent === '视频图包'`);
 
   // ===== 收藏 =====
   await evalJs(`location.hash = '#/shelf'; true`);
@@ -113,9 +124,56 @@ try {
     pass("shelf", shelf);
   else fail("shelf", shelf);
 
-  // ===== 侧边栏「收藏」→ 回到文件夹总览 =====
+  // ===== 收藏夹内：漫画 + 视频 + 图包一起展示 =====
   await evalJs(`document.querySelector('.fav-page .plate')?.click(); true`);
   await waitFor(`!!document.querySelector('.fav-page .book-grid')`);
+  await sleep(800);
+  const folderItems = await evalJs(`({
+    count: document.querySelectorAll('.fav-page .book-cell').length,
+    names: [...document.querySelectorAll('.fav-page .book-name')].map(n => n.textContent.trim()),
+    exts: [...document.querySelectorAll('.fav-page .book-ext')].map(n => n.textContent.trim())
+  })`);
+  if (
+    folderItems.count === 6 &&
+    folderItems.names.some((n) => n.includes("Making Of.mp4")) &&
+    folderItems.names.some((n) => n.includes("Art Pack.jpg")) &&
+    folderItems.exts.includes("MP4")
+  )
+    pass("shelf-folder-media", folderItems);
+  else fail("shelf-folder-media", folderItems);
+
+  // 点击视频 → 播放器（含播放列表）
+  await evalJs(`[...document.querySelectorAll('.fav-page .book-cell')].find(n => n.textContent.includes('Making Of.mp4'))?.click(); true`);
+  await waitFor(`!!document.querySelector('.video-page .bar-seek .seek')`);
+  await sleep(900);
+  const player = await evalJs(`({
+    title: document.querySelector('.video-page .head-title')?.textContent.trim(),
+    hasSeek: !!document.querySelector('.video-page .seek'),
+    hasPlaylist: !!document.querySelector('.video-page .pl-list'),
+    hasTime: (document.querySelector('.video-page .seek-time')?.textContent.trim() || "").includes(":")
+  })`);
+  if (player.hasSeek && player.hasPlaylist && player.hasTime && player.title.includes("Making Of"))
+    pass("player", player);
+  else fail("player", player);
+  await evalJs(`history.back(); true`);
+  await waitFor(`!!document.querySelector('.fav-page .book-grid')`);
+
+  // 点击图包 → 图包查看器（同文件夹可翻页）
+  await evalJs(`[...document.querySelectorAll('.fav-page .book-cell')].find(n => n.textContent.includes('Art Pack'))?.click(); true`);
+  await waitFor(`!!document.querySelector('.media-page img') && document.querySelector('.media-page img').src.startsWith('blob:')`);
+  await sleep(700);
+  const viewer = await evalJs(`({
+    counter: document.querySelector('.media-page .pill-count')?.textContent.trim(),
+    title: document.querySelector('.media-page .head-title')?.textContent.trim(),
+    imgOk: (document.querySelector('.media-page img')?.naturalWidth || 0) > 0
+  })`);
+  if (viewer.counter === "1 / 2" && viewer.imgOk)
+    pass("media-viewer", viewer);
+  else fail("media-viewer", viewer);
+  await evalJs(`history.back(); true`);
+  await waitFor(`!!document.querySelector('.fav-page .book-grid')`);
+
+  // ===== 侧边栏「收藏」→ 回到文件夹总览 =====
   await evalJs(`document.querySelectorAll('.nav-item')[1]?.click(); true`);
   const resetShelf = await waitFor(`!!document.querySelector('.fav-page .plate-grid')`);
   if (resetShelf) pass("reset-shelf", "点击收藏从文件夹内回到收藏总览");

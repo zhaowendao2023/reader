@@ -73,11 +73,37 @@ try {
   await sleep(1500);
   await shot("shot-home-media.png");
 
+  // 图包查看器（主界面点击图包卡片）
+  await evalJs(`[...document.querySelectorAll('.home-page .book-cell')].find(n => n.textContent.includes('Art Pack'))?.click(); true`);
+  await waitFor(`!!document.querySelector('.media-page img') && document.querySelector('.media-page img').src.startsWith('blob:')`);
+  await sleep(900);
+  await shot("shot-media-viewer.png");
+  await evalJs(`history.back(); true`);
+  await waitFor(`document.querySelector('.home-page .hero-title')?.textContent === '视频图包'`);
+
+  // 视频播放器（点击视频系列卡片）
+  await evalJs(`[...document.querySelectorAll('.home-page .book-cell')].find(n => n.textContent.includes('集'))?.click(); true`);
+  await waitFor(`!!document.querySelector('.video-page .bar-seek .seek')`);
+  await sleep(1400);
+  await shot("shot-video-player.png");
+  // 展开播放列表
+  await evalJs(`document.querySelector('.video-page .head-actions .circle-btn')?.click(); true`);
+  await sleep(800);
+  await shot("shot-video-playlist.png");
+  await evalJs(`history.back(); true`);
+  await waitFor(`document.querySelector('.home-page .hero-title')?.textContent === '视频图包'`);
+
   // 收藏视图
   await evalJs(`location.hash = '#/shelf'; true`);
   await waitFor(`!!document.querySelector('.fav-page .plate-grid')`);
   await sleep(2000);
   await shot("shot-shelf.png");
+
+  // 收藏夹内：漫画 + 视频 + 图包
+  await evalJs(`document.querySelector('.fav-page .plate')?.click(); true`);
+  await waitFor(`!!document.querySelector('.fav-page .book-grid')`);
+  await sleep(1800);
+  await shot("shot-shelf-folder.png");
 
   // 文件夹预览（根目录）
   await evalJs(`location.hash = '#/browse'; true`);
