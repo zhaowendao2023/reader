@@ -1,6 +1,9 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 // use std::path::PathBuf;
 // use std::time::Instant;
+mod db;
+mod mpv;
+
 use tauri_plugin_android_fs::{AndroidFsExt, PersistedUriPermission, FileUri, PersistableAccessMode};
 use tauri::Manager;
 // use tokio::fs::File;
@@ -62,6 +65,24 @@ fn clear_all_url(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_test_file() -> Option<String> {
     std::env::var("READER_TEST_FILE").ok()
+}
+
+/// Reads and inflates a single archive entry on the Rust side, so CBZ image
+/// loading avoids many small plugin-fs reads plus JS-side decompression.
+#[tauri::command]
+async fn read_cbz_entry(path: String, name: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let mut entry = archive.by_name(&name).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(entry.size() as usize);
+        std::io::Read::read_to_end(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        Ok::<_, String>(out)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[derive(serde::Serialize)]
@@ -233,6 +254,38 @@ fn list_drives() -> Vec<String> {
 //     Ok(chunks)
 // }
 
+/// Reads the reading-progress map as raw JSON text (stateless read).
+#[tauri::command]
+async fn load_progress(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("progress.json");
+    tauri::async_runtime::spawn_blocking(move || match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Atomically overwrites the reading-progress file with JSON text from JS.
+#[tauri::command]
+async fn save_progress(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join("progress.json.tmp");
+        std::fs::write(&tmp, data.as_bytes()).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, dir.join("progress.json")).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -257,11 +310,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            app.manage(db::AppDb::open(app.handle())?);
+            app.manage(mpv::MpvPool::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             clear_url,
             clear_all_url,
             pick_file,
             get_test_file,
+            read_cbz_entry,
+            load_progress,
+            save_progress,
             list_drives,
             pick_directory,
             list_directory,
@@ -269,7 +330,16 @@ pub fn run() {
             check_directory_grant,
             check_all_files_access,
             open_all_files_access_settings,
-            get_primary_storage_path
+            get_primary_storage_path,
+            mpv::mpv_play,
+            mpv::mpv_set_bounds,
+            mpv::mpv_pause,
+            mpv::mpv_seek,
+            mpv::mpv_stop,
+            mpv::mpv_stop_all,
+            mpv::mpv_release,
+            mpv::mpv_get_state,
+            mpv::mpv_pool_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
