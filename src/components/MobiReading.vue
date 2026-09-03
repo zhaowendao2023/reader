@@ -1,11 +1,14 @@
 <script setup>
 import { useBooks } from "../store/loadBooks";
 import { getMOBI } from "../utils/bookData";
+import { getProgress } from "../utils/progress";
 const index = inject("index");
 const toces = inject("toces");
 const containerRef = ref(null);
 const book = ref(null);
 const bookInfo = inject("bookInfo");
+const bookId = inject("bookId");
+const progressReady = inject("progressReady");
 const images = ref([]);
 const cssVars = useBooks().cssVarsData;
 
@@ -28,6 +31,15 @@ async function fetchChapterContent(url) {
 }
 onMounted(async () => {
   await loadMobi(bookInfo.value.path);
+  index.value.total = Math.ceil(
+    containerRef.value.scrollHeight / containerRef.value.clientHeight
+  );
+  const start = await getProgress(bookId.value, index.value.total);
+  if (start > 0) {
+    containerRef.value.scrollTop = start * containerRef.value.clientHeight;
+    index.value.nowIndex = start;
+  }
+  progressReady.value = true;
 });
 
 const x = ref(0);
@@ -86,10 +98,20 @@ const right = () => {
   });
 };
 
+// 底部滑块跳页：n 为视口屏序号（0 基），滚动到第 n 屏
+const slider = (n) => {
+  index.value.nowIndex = n;
+  containerRef.value?.scrollTo({
+    top: n * containerRef.value.clientHeight,
+    behavior: "smooth",
+  });
+};
+
 defineExpose({
   jump,
   left,
   right,
+  slider,
 });
 </script>
 

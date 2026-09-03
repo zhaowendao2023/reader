@@ -2,66 +2,18 @@
 // use std::path::PathBuf;
 // use std::time::Instant;
 mod db;
+mod import;
 mod mpv;
+mod paths;
+mod sync;
+mod tags;
+mod video;
 
-use tauri_plugin_android_fs::{AndroidFsExt, PersistedUriPermission, FileUri, PersistableAccessMode};
+use std::sync::Arc;
+
 use tauri::Manager;
 // use tokio::fs::File;
 // use tokio::io::{AsyncReadExt, BufReader};
-#[tauri::command]
-async fn pick_file(app: tauri::AppHandle) -> Result<String, String> {
-    let api = app.android_fs();
-    let selected_files = api
-        .file_picker()
-        .pick_files(None, &["*/*"])
-        .map_err(|e| e.to_string())?;
-    if selected_files.is_empty() {
-        return Err("用户取消了选择".to_string());
-    }
-
-    let file_uri = &selected_files[0];
-
-    api.take_persistable_uri_permission(file_uri)
-        .map_err(|e| e.to_string())?;
-
-    // 5. 将文件内容返回给前端
-    Ok(format!("{}", file_uri.uri))
-}
-
-#[tauri::command]
-fn clear_url(url: &str, app: tauri::AppHandle) {
-    let api = app.android_fs();
-    match api.get_all_persisted_uri_permissions() {
-        Ok(permissions_iter) => {
-            for permission in permissions_iter {
-                let uri_str = match &permission {
-                    PersistedUriPermission::File { uri, .. } => uri,
-                    PersistedUriPermission::Dir { uri, .. } => uri,
-                };
-                if uri_str.uri == url {
-                    if let Err(e) = api.release_persisted_uri_permission(&uri_str) {
-                        eprintln!("释放权限失败 for URI {}: {}", url, e);
-                    } else {
-                        println!("成功释放权限 for URI: {}", url);
-                    }
-                    break;
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("获取持久化URI权限时出错: {}", e);
-            return;
-        }
-    }
-    println!("权限已释放 for URI: {}", url);
-}
-
-#[tauri::command]
-fn clear_all_url(app: tauri::AppHandle) {
-    let api = app.android_fs();
-    let _ = api.release_all_persisted_uri_permissions();
-}
-
 #[tauri::command]
 fn get_test_file() -> Option<String> {
     std::env::var("READER_TEST_FILE").ok()
@@ -85,53 +37,79 @@ async fn read_cbz_entry(path: String, name: String) -> Result<tauri::ipc::Respon
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DirectoryEntry {
-    name: String,
-    uri: String,
-    tree_uri: String,
-    is_dir: bool,
+struct CoverCacheEntry {
+    /// 64-char sha256 hex of the lowercased source path（与 JS calculateHash 一致）。
+    /// Rust 侧当纯 id 用，仅允许 [0-9a-f]{64}，杜绝路径穿越。
+    id: String,
+    /// 缓存文件名白名单：cover.webp | cover.jpg | cover.raw
+    file_name: String,
 }
 
-/// 弹出 SAF 目录选择器并持久授权，返回目录 URI（仅 Android）
+/// 批量读取磁盘封面缓存：一次 IPC 并行读完 N 个 cover-cache/v<version>/<id>/<file>。
+///
+/// 为什么：热路径每个封面要打两次 plugin-fs IPC（stat 源文件 + readFile 缓存），
+/// Android WebView 的 bridge 每次往返固定 ~90ms，批量后摊到 ~1/24 次。
+///
+/// 返回原始二进制（tauri::ipc::Response），格式为长度前缀拼接：
+///   [u32 LE len0][bytes0][u32 LE len1][bytes1]...
+///   缺失条目 len = 0xFFFFFFFF 占位。JS 拿到 ArrayBuffer 按 len 切分即得各封面字节。
+///
+/// 备注：源文件 stat 仍走 JS 端缓存 cachedStat（60s TTL）——它要返回给
+/// matchesMeta 做 mtime/size 校验，塞进二进制 payload 会破坏切分、塞 JSON 会
+/// 多一次往返；且批量后 IPC 已近 0，stat 非瓶颈。本命令只负责读文件。
 #[tauri::command]
-fn pick_directory(app: tauri::AppHandle, initial_uri: Option<String>) -> Result<Option<FileUri>, String> {
-    let api = app.android_fs();
-    // 有上次的根目录时，把选择器定位到那里方便换根；首次让系统用默认视图打开，
-    // 避免部分机型（如 MIUI）对定位到存储根弹出"无法使用此文件夹"的拒绝提示。
-    let initial = initial_uri.map(|u| FileUri { uri: u, document_top_tree_uri: None });
-    let picked = api.file_picker().pick_dir(initial.as_ref()).map_err(|e| e.to_string())?;
-    if let Some(uri) = picked {
-        api.take_persistable_uri_permission(&uri).map_err(|e| e.to_string())?;
-        Ok(Some(uri))
-    } else {
-        Ok(None)
+async fn read_cover_cache_batch(
+    app: tauri::AppHandle,
+    cache_root: String,
+    entries: Vec<CoverCacheEntry>,
+) -> Result<tauri::ipc::Response, String> {
+    if entries.is_empty() {
+        return Ok(tauri::ipc::Response::new(Vec::new()));
     }
-}
+    if entries.len() > 512 {
+        return Err("batch too large".into());
+    }
 
-/// 列出目录 URI 下的子项（仅 Android）
-#[tauri::command]
-fn list_directory(uri: String, tree_uri: String, app: tauri::AppHandle) -> Result<Vec<DirectoryEntry>, String> {
-    let api = app.android_fs();
-    let file_uri = FileUri { uri, document_top_tree_uri: Some(tree_uri) };
-    let entries = api.read_dir(&file_uri).map_err(|e| e.to_string())?;
-    Ok(entries
-        .map(|e| DirectoryEntry {
-            name: e.name().to_string(),
-            uri: e.uri().uri.clone(),
-            tree_uri: e.uri().document_top_tree_uri.clone().unwrap_or_default(),
-            is_dir: e.is_dir(),
-        })
-        .collect())
-}
+    // cache_root 白名单：必须形如 cover-cache/v<N>，杜绝路径穿越。
+    let valid_root = cache_root
+        .strip_prefix("cover-cache/v")
+        .map(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false);
+    if !valid_root {
+        return Err(format!("invalid cache_root: {cache_root}"));
+    }
 
-/// 获取目录 URI 的显示名称（仅 Android）
-#[tauri::command]
-fn get_directory_name(uri: String, app: tauri::AppHandle) -> Result<String, String> {
-    let api = app.android_fs();
-    let file_uri = FileUri { uri, document_top_tree_uri: None };
-    api.get_name(&file_uri).map_err(|e| e.to_string())
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?;
+    // 只允许白名单 id（64 位 hex，天然杜绝路径穿越）+ 白名单文件名。
+    let is_valid_id = |id: &str| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit());
+    let is_valid_file = |f: &str| matches!(f, "cover.webp" | "cover.jpg" | "cover.raw");
+
+    const MISSING: u32 = 0xFFFF_FFFF;
+    let mut payload: Vec<u8> = Vec::new();
+    for entry in &entries {
+        if !is_valid_id(&entry.id) || !is_valid_file(&entry.file_name) {
+            payload.extend_from_slice(&MISSING.to_le_bytes());
+            continue;
+        }
+        let mut path = data_dir.join(&cache_root);
+        path.push(&entry.id);
+        path.push(&entry.file_name);
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let len = bytes.len();
+                payload.extend_from_slice(&(len as u32).to_le_bytes());
+                payload.extend_from_slice(&bytes);
+            }
+            Err(_) => payload.extend_from_slice(&MISSING.to_le_bytes()),
+        }
+    }
+
+    Ok(tauri::ipc::Response::new(payload))
 }
 
 /// “所有文件访问权限”桥接（Android 11+ 的 MANAGE_EXTERNAL_STORAGE）
@@ -177,6 +155,13 @@ fn open_all_files_access_settings(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Android 系统返回键兜底：前端确认已到根路由时调用，真正退出应用。
+/// （默认 WryActivity 的 finish() 会在 SPA 还有路由历史时就退出整个 App）
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[tauri::command]
 fn get_primary_storage_path(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "android")]
@@ -194,15 +179,7 @@ fn get_primary_storage_path(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
-/// 检查 SAF 目录授权是否仍然有效（仅 Android）
-#[tauri::command]
-fn check_directory_grant(uri: String, tree_uri: String, app: tauri::AppHandle) -> bool {
-    let api = app.android_fs();
-    let file_uri = FileUri { uri, document_top_tree_uri: Some(tree_uri) };
-    api.check_persisted_uri_permission(&file_uri, PersistableAccessMode::Read)
-        .unwrap_or(false)
-}
-
+/// 列出可用盘符（Windows）
 #[tauri::command]
 fn list_drives() -> Vec<String> {
     #[cfg(target_os = "windows")]
@@ -220,6 +197,54 @@ fn list_drives() -> Vec<String> {
     {
         Vec::new()
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirMetaEntry {
+    name: String,
+    is_dir: bool,
+    mtime: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirMeta {
+    /// The directory's own last-modified time (ms), so a single call can tell
+    /// whether any direct child changed since the last sync.
+    self_mtime: Option<i64>,
+    entries: Vec<DirMetaEntry>,
+}
+
+fn file_mtime_ms(path: &std::path::Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64))
+}
+
+/// Lists a directory with per-entry mtime. The frontend uses these mtimes to
+/// serve unchanged subtrees straight from the SQLite index instead of
+/// re-reading the whole tree on every entry/exit/delete.
+///
+/// Works on the real-filesystem path model: desktop and Android "all files
+/// access" browsing (favorite roots are real `/storage/emulated/0/...`
+/// paths) — direct `std::fs`, directory mtime included.
+#[tauri::command]
+fn read_dir_meta(path: String) -> Result<DirMeta, String> {
+    let dir = std::path::Path::new(&path);
+    let self_mtime = file_mtime_ms(dir);
+    let rd = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for entry in rd {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let mtime = file_mtime_ms(&entry.path());
+        entries.push(DirMetaEntry { name, is_dir, mtime });
+    }
+    Ok(DirMeta { self_mtime, entries })
 }
 
 // const CHUNK_SIZE: usize = 1024 * 1024; // 1MB
@@ -254,44 +279,11 @@ fn list_drives() -> Vec<String> {
 //     Ok(chunks)
 // }
 
-/// Reads the reading-progress map as raw JSON text (stateless read).
-#[tauri::command]
-async fn load_progress(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("progress.json");
-    tauri::async_runtime::spawn_blocking(move || match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Atomically overwrites the reading-progress file with JSON text from JS.
-#[tauri::command]
-async fn save_progress(app: tauri::AppHandle, data: String) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let tmp = dir.join("progress.json.tmp");
-        std::fs::write(&tmp, data.as_bytes()).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, dir.join("progress.json")).map_err(|e| e.to_string())?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
 
     builder
-        .plugin(tauri_plugin_android_fs::init())
         .plugin(
             tauri::plugin::Builder::new("allfiles")
                 .setup(|app: &tauri::AppHandle, api: tauri::plugin::PluginApi<tauri::Wry, ()>| {
@@ -306,40 +298,95 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(
+            tauri::plugin::Builder::new("video")
+                .setup(|app: &tauri::AppHandle, api: tauri::plugin::PluginApi<tauri::Wry, ()>| {
+                    #[cfg(target_os = "android")]
+                    {
+                        let handle = api
+                            .register_android_plugin("com.tauri_app.reader", "VideoPlugin")
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                        app.manage(video::VideoAccess(handle));
+                    }
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             app.manage(db::AppDb::open(app.handle())?);
-            app.manage(mpv::MpvPool::default());
+            #[cfg(target_os = "windows")]
+            {
+                app.manage(mpv::MpvPool::default());
+                app.manage(mpv::GrabPool::default());
+                app.manage(mpv::GrabState(Arc::new(tokio::sync::Semaphore::new(
+                    mpv::GRAB_CONCURRENCY,
+                ))));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            clear_url,
-            clear_all_url,
-            pick_file,
             get_test_file,
             read_cbz_entry,
-            load_progress,
-            save_progress,
+            read_cover_cache_batch,
+            sync::sync_favorite,
+            sync::list_items,
+            sync::search_items,
+            sync::library_meta,
+            sync::get_progress,
+            sync::save_progress_map,
+            sync::get_favorites,
+            sync::add_favorite,
+            sync::remove_favorite,
+            sync::clear_library,
+            sync::force_rescan,
+            tags::list_tags,
+            tags::get_item_tags,
+            tags::set_item_tags,
+            tags::rename_tag,
+            tags::delete_tag,
+            tags::get_tag_items,
+            tags::set_tag_kind,
+            tags::get_tag_samples,
             list_drives,
-            pick_directory,
-            list_directory,
-            get_directory_name,
-            check_directory_grant,
+            read_dir_meta,
             check_all_files_access,
             open_all_files_access_settings,
             get_primary_storage_path,
+            exit_app,
             mpv::mpv_play,
             mpv::mpv_set_bounds,
             mpv::mpv_pause,
             mpv::mpv_seek,
+            mpv::mpv_get_volume,
+            mpv::mpv_set_volume,
+            mpv::mpv_set_speed,
+            mpv::mpv_volume_debug,
             mpv::mpv_stop,
             mpv::mpv_stop_all,
             mpv::mpv_release,
             mpv::mpv_get_state,
-            mpv::mpv_pool_info
+            mpv::mpv_pool_info,
+            mpv::mpv_grab_pool_info,
+            mpv::mpv_grab_frame,
+            video::video_play,
+            video::video_set_bounds,
+            video::video_pause,
+            video::video_seek,
+            video::video_get_volume,
+            video::video_set_volume,
+            video::video_set_speed,
+            video::video_stop,
+            video::video_stop_all,
+            video::video_release,
+            video::video_get_state,
+            video::video_pool_info,
+            video::video_grab_frame,
+            video::video_set_screen_brightness,
+            video::video_reset_screen_brightness
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

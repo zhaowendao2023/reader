@@ -12,19 +12,40 @@
         </RouterView>
       </n-notification-provider>
     </n-config-provider>
+    <ContextMenu />
+    <TagEditor />
   </div>
 </template>
 <script setup>
 import { useBooks } from "./store/loadBooks";
+import { useSettings } from "./store/settings";
 import { darkTheme } from "naive-ui";
-import { exists, mkdir } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import router from "./router";
-import { getBookInfo } from "./utils/bookData";
+import { getBookInfo, ensureCoverCache, cleanupLegacyCoverCache } from "./utils/bookData";
 import { calculateHash } from "./utils/utils";
+import { openGenericMenu } from "./utils/contextMenu";
+import ContextMenu from "./components/ContextMenu.vue";
+import TagEditor from "./components/TagEditor.vue";
 
 const booksStore = useBooks();
+const settings = useSettings();
 const theme = ref({});
+
+// 全局拦截系统右键/长按菜单：卡片上已由 Home 打开条目菜单并 stopPropagation，
+// 其余区域一律改为自定义通用菜单。
+const onGlobalContextMenu = (e) => {
+  e.preventDefault();
+  openGenericMenu(e.clientX, e.clientY);
+};
+
+onMounted(() => {
+  document.addEventListener("contextmenu", onGlobalContextMenu);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("contextmenu", onGlobalContextMenu);
+});
 
 // 同步主题类到 <html>，确保 body 及全局变量正确切换
 watch(
@@ -37,6 +58,8 @@ watch(
 );
 
 onBeforeMount(async () => {
+  // 先恢复持久化设置（侧栏/图包视图等），再加载库数据
+  await settings.load();
   await booksStore.loadData();
   theme.value = await getTheme();
   await start();
@@ -45,24 +68,9 @@ onBeforeMount(async () => {
 });
 
 async function start() {
-  const has = await exists("resource/data", {
-    baseDir: useBooks().baseSrc,
-  });
-
-  if (!has) {
-    const reHas = await exists("resource", {
-      baseDir: useBooks().baseSrc,
-    });
-    if (!reHas) {
-      await mkdir("resource", {
-        baseDir: useBooks().baseSrc,
-      });
-    }
-    await mkdir("resource/data", {
-      baseDir: useBooks().baseSrc,
-    });
-  }
-  console.log("startCreatePath");
+  await cleanupLegacyCoverCache();
+  await ensureCoverCache();
+  console.log("cover cache initialized");
 }
 
 async function autoOpenTestFile() {
@@ -77,17 +85,9 @@ async function autoOpenTestFile() {
 
   try {
     const id = await calculateHash(testPath);
-    if (!booksStore.getBook(id)) {
-      const bookInfo = await getBookInfo(testPath);
-      await booksStore.addBook({
-        [id]: {
-          title: bookInfo.title,
-          path: testPath,
-          ext: bookInfo.ext,
-        },
-      });
-    }
-    await router.push(`/reading/${id}`);
+    const bookInfo = await getBookInfo(testPath);
+    const name = testPath.split(/[\\/]/).filter(Boolean).pop() || testPath;
+    await router.push({ path: `/reading/${id}`, query: { path: testPath, name, ext: bookInfo.ext } });
   } catch (error) {
     console.error("自动测试打开失败:", error);
   }
@@ -103,6 +103,7 @@ async function autoOpenTestFile() {
 }
 
 :deep(img) {
-  filter: v-bind("booksStore.theme ? 'brightness(1)' : 'brightness(0.86)'");
+  /* 深色主题压暗封面：保留静态透明度，避免主题切换时所有封面同时做淡入淡出。 */
+  opacity: v-bind("booksStore.theme ? '1' : '0.86'");
 }
 </style>

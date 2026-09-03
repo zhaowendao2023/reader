@@ -15,7 +15,9 @@
         "title": "reader",
         "width": 1080,
         "height": 720,
-        "decorations": false
+        "decorations": false,
+        "transparent": true,
+        "additionalBrowserArgs": "--remote-debugging-port=9222"
       }
     ],
     "security": {

@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell" :class="{ 'is-mobile': isAndroid, 'rail-open': !collapsed }">
     <!-- 侧边导航栏 -->
-    <aside class="nav-rail" :class="{ 'is-collapsed': collapsed }">
+    <aside class="nav-rail">
       <div class="rail-inner">
         <div class="brand">
           <button class="brand-mark" title="返回主界面" @click="handleMenuSelect('home')">
@@ -15,7 +15,7 @@
 
         <nav class="nav-list">
           <button
-            v-for="item in navItems"
+            v-for="item in mainNavItems"
             :key="item.key"
             class="nav-item"
             :class="{ active: menuValue === item.key }"
@@ -32,11 +32,19 @@
             <span class="nav-ico"><Icon :id="themeIcon" :size="19" /></span>
             <span class="nav-label" :class="{ hidden: collapsed }">外观</span>
           </button>
-          <button class="nav-item" title="收起侧栏" @click="ui.toggleSider()">
+          <button
+            class="nav-item"
+            :class="{ active: menuValue === 'settings' }"
+            title="设置"
+            @click="handleMenuSelect('settings')"
+          >
+            <span class="nav-ico"><Icon id="settings" :size="19" /></span>
+            <span class="nav-label" :class="{ hidden: collapsed }">设置</span>
+          </button>
+          <button class="nav-item" title="收起侧栏" @click="settings.toggleSider()">
             <span class="nav-ico"><Icon :id="collapsed ? 'panel-left-open' : 'panel-left-close'" :size="19" /></span>
             <span class="nav-label" :class="{ hidden: collapsed }">{{ collapsed ? '展开' : '收起' }}</span>
           </button>
-          <div v-if="!collapsed" class="rail-ver mono">V0.1 · ZHAOWENDAO</div>
         </div>
       </div>
     </aside>
@@ -54,8 +62,31 @@
         <keep-alive>
           <FileBrowser v-if="route.path === '/browse'" />
         </keep-alive>
+        <keep-alive>
+          <SearchPage v-if="route.path === '/search'" />
+        </keep-alive>
+        <keep-alive>
+          <TagBrowse v-if="route.path === '/tags'" />
+        </keep-alive>
+        <keep-alive>
+          <Settings v-if="route.path === '/settings'" />
+        </keep-alive>
       </div>
     </main>
+
+    <!-- 移动端底部导航：窄屏时替换侧栏 -->
+    <nav class="mobile-tabbar" aria-label="主导航">
+      <button
+        v-for="item in navItems"
+        :key="item.key"
+        class="tab-item"
+        :class="{ active: menuValue === item.key }"
+        @click="handleMenuSelect(item.key)"
+      >
+        <span class="tab-ico"><Icon :id="item.icon" :size="20" /></span>
+        <span class="tab-label">{{ item.label }}</span>
+      </button>
+    </nav>
   </div>
 </template>
 <script setup>
@@ -64,15 +95,20 @@ import Icon from "./Icon.vue";
 import Home from "./Home.vue";
 import Display from "./Display.vue";
 import FileBrowser from "./FileBrowser.vue";
+import SearchPage from "./SearchPage.vue";
+import TagBrowse from "./TagBrowse.vue";
+import Settings from "./Settings.vue";
 import { useUI } from "../store/ui";
 import { useBooks } from "../store/loadBooks";
+import { useSettings } from "../store/settings";
 
 const route = useRoute();
 const router = useRouter();
 const booksStore = useBooks();
 const ui = useUI();
+const settings = useSettings();
 const isAndroid = computed(() => booksStore.platform === "android");
-const collapsed = computed(() => ui.siderCollapsed);
+const collapsed = computed(() => settings.siderCollapsed);
 
 const themeIcon = computed(() => (booksStore.theme ? "sun" : "moon"));
 
@@ -80,16 +116,32 @@ const navItems = [
   { label: "主界面", key: "home", icon: "home", index: "01" },
   { label: "收藏", key: "shelf", icon: "star", index: "02" },
   { label: "文件夹预览", key: "browse", icon: "folder", index: "03" },
+  { label: "标签", key: "tags", icon: "tag", index: "04" },
+  { label: "设置", key: "settings", icon: "settings", index: "05" },
 ];
+
+// 桌面侧栏顶部只放三个主页面；设置挪到 nav-foot（底部），移动端底部栏仍含全部四项
+const mainNavItems = computed(() => navItems.filter((i) => i.key !== "settings"));
 
 const menuValue = computed(() => {
   if (route.path === "/shelf") return "shelf";
   if (route.path === "/browse") return "browse";
+  if (route.path === "/tags") return "tags";
+  if (route.path === "/settings") return "settings";
   return "home";
 });
 
 const handleMenuSelect = (key) => {
-  const target = key === "home" ? "/" : key === "shelf" ? "/shelf" : "/browse";
+  const target =
+    key === "home"
+      ? "/"
+      : key === "shelf"
+        ? "/shelf"
+        : key === "browse"
+          ? "/browse"
+          : key === "tags"
+            ? "/tags"
+            : "/settings";
   // 已在该路由也触发一次 reset，让视图直接回到本栏目的主界面
   if (route.path !== target) router.push(target);
   ui.resetView();
@@ -98,11 +150,12 @@ const handleMenuSelect = (key) => {
 
 <style scoped lang="scss">
 .app-shell {
-  --rail-w: 66px;
+  --rail-w: 72px;
   position: relative;
   height: 100vh;
   overflow: hidden;
   background: var(--bg-0);
+  transition: background-color 0.3s var(--ease-out);
   &.rail-open {
     --rail-w: 216px;
   }
@@ -120,9 +173,8 @@ const handleMenuSelect = (key) => {
   flex-direction: column;
   background: var(--bg-1);
   border-right: 1px solid var(--line);
-  transition: width 0.24s var(--ease-out);
+  transition: width 0.24s var(--ease-out), background-color 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
   overflow: hidden;
-  will-change: width;
 }
 
 .rail-inner {
@@ -139,7 +191,7 @@ const handleMenuSelect = (key) => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 6px;
+  padding: 0 4px;
 }
 
 .brand-mark {
@@ -169,15 +221,14 @@ const handleMenuSelect = (key) => {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   max-width: 180px;
-  transition: opacity 0.15s, transform 0.2s var(--ease-out), max-width 0.2s var(--ease-out);
+  transition: opacity 0.18s;
 
   &.hidden {
     opacity: 0;
-    transform: translateX(-10px);
-    max-width: 0;
     pointer-events: none;
   }
 }
@@ -238,11 +289,9 @@ const handleMenuSelect = (key) => {
     letter-spacing: 0.06em;
     overflow: hidden;
     white-space: nowrap;
-    transition: opacity 0.18s, transform 0.25s var(--ease-out), max-width 0.25s var(--ease-out);
+    transition: opacity 0.18s;
     &.hidden {
       opacity: 0;
-      transform: translateX(-8px);
-      max-width: 0;
     }
   }
 
@@ -287,31 +336,9 @@ const handleMenuSelect = (key) => {
   gap: 6px;
 }
 
-.rail-ver {
-  margin-top: 14px;
-  padding: 0 14px;
-  font-size: 8.5px;
-  letter-spacing: 0.24em;
-  color: var(--text-3);
-  white-space: nowrap;
-  animation: fadeIn 0.6s both;
-}
-
-
-/* 收起态：图标居中、文字折叠 */
-.nav-rail.is-collapsed {
-  .rail-inner {
-    padding-left: 13px;
-    padding-right: 13px;
-  }
-
-  .brand,
-  .nav-item {
-    padding: 0;
-    justify-content: center;
-    gap: 0;
-  }
-}
+/* 收起态：无额外规则——折叠时唯一的几何变化就是 --rail-w 收窄。
+   行内布局（rail-inner/行的 padding、gap、justify）两态完全一致，图标锚点固定：
+   之前折叠态会把图标 justify-content:center + 收 padding 重新居中，与宽度动画叠加导致左右晃动。 */
 
 /* ===== 主区域 ===== */
 .main-area {
@@ -321,9 +348,8 @@ const handleMenuSelect = (key) => {
   bottom: 0;
   left: var(--rail-w);
   overflow: hidden;
-  transition: left 0.24s var(--ease-out);
+  transition: left 0.24s var(--ease-out), background-color 0.3s var(--ease-out);
   background: var(--bg-0);
-  will-change: left;
 }
 
 .view-stage {
@@ -336,5 +362,89 @@ const handleMenuSelect = (key) => {
 .is-mobile .nav-rail,
 .is-mobile .main-area {
   transition: none !important;
+}
+
+/* ===== 移动端底部导航（窄屏，替代侧栏）===== */
+.mobile-tabbar {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  /* 窄屏：侧栏隐藏，内容区占满全宽 */
+  .nav-rail {
+    display: none;
+  }
+
+  .main-area {
+    left: 0;
+    transition: none !important;
+  }
+
+  /* 底部 Tab 栏 */
+  .mobile-tabbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    display: flex;
+    align-items: stretch;
+    height: 58px;
+    background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.06);
+    backdrop-filter: blur(14px);
+  }
+
+  .tab-item {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border: none;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.2s;
+
+    .tab-ico {
+      display: grid;
+      place-items: center;
+      transition: transform 0.25s var(--ease-spring);
+    }
+
+    .tab-label {
+      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    &.active {
+      color: var(--accent);
+      .tab-ico {
+        transform: translateY(-1px);
+      }
+      .tab-label {
+        font-weight: 600;
+      }
+    }
+
+    &:active {
+      opacity: 0.7;
+    }
+  }
+}
+
+/* 触屏无悬停语义：侧栏/导航 hover 位移在窄屏底部 Tab 上无意义。
+   侧栏本身只在触屏平板横向可能显示；统一在触屏下禁用其位移反馈。 */
+@media (hover: none) {
+  .brand-mark:hover,
+  .nav-item:hover .nav-ico {
+    transform: none;
+  }
 }
 </style>

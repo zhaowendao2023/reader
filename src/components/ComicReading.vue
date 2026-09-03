@@ -1,13 +1,17 @@
 <script setup>
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
-import { useBooks } from "../store/loadBooks";
+import { BaseDirectory } from "@tauri-apps/api/path";
 import { getComic } from "../utils/bookData";
+import { getProgress } from "../utils/progress";
+import { useSettings } from "../store/settings";
 
 const index = inject("index");
 const toces = inject("toces");
 const containerRef = ref(null);
 const bookInfo = inject("bookInfo");
+const bookId = inject("bookId");
+const progressReady = inject("progressReady");
 
 const book = ref(null);
 const pageSlots = ref([]);
@@ -16,10 +20,22 @@ const loadedCount = ref(0);
 const loadTiming = ref(null);
 const maxPageMs = ref(0);
 
+const settings = useSettings();
+
 // 渲染窗口：当前页前后各 WINDOW 页；卸载阈值 BUFFER 稍大，避免来回滚动反复加载
 const WINDOW = 3;
 const BUFFER = 6;
-const MAX_CONCURRENT = 4;
+// 解压 + 解码都在主线程，并发太高会让大图互相抢 CPU、挤掉解码缓存，反而拖慢第一帧
+const MAX_CONCURRENT = 2;
+// 长距离跳页直接瞬移：smooth 滚动 + 懒加载让目标页布局不断被推远，动画追不上会停在中间页。
+// ≤ SMOOTH_MAX_DISTANCE 页的短距离（上一页/下一页/键盘步进）保留平滑动画。
+const SMOOTH_MAX_DISTANCE = 5;
+// 拖动滑块时值连续变化：防抖合并滚动，松手后才真正跳一次，避免每帧 scrollIntoView 互相打断
+const SLIDER_DEBOUNCE_MS = 250;
+
+let sliderTimer = null;
+let sliderOrigin = 0;
+let sliderActive = false;
 
 let loadStart = 0;
 let firstPageMs = null;
@@ -29,20 +45,11 @@ const queued = new Set();
 const loading = new Set();
 let active = 0;
 
-const getImageSize = (src) =>
-  new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    img.onerror = () => reject(new Error("图片解码失败"));
-    img.src = src;
-  });
-
 const loadPage = async (i) => {
   const slot = pageSlots.value[i];
   const t0 = performance.now();
   try {
     const url = await book.value.sections[i].load();
-    const dim = await getImageSize(url);
     const keepLo = Math.max(0, current.value - BUFFER);
     const keepHi = Math.min(pageSlots.value.length - 1, current.value + BUFFER);
     // 加载期间窗口已经移走：直接回收，不写入界面
@@ -50,27 +57,41 @@ const loadPage = async (i) => {
       book.value.sections[i].unload();
       return;
     }
-    slot.src = url;
-    slot.w = dim.w;
-    slot.h = dim.h;
+    slot.t0 = t0; // 供 img load 事件统计整页耗时（解压 + 解码）
+    slot.src = url; // blob 就绪立即上屏，解码由 <img> 自身完成，避免二次解码
     loadedCount.value++;
-    const pageMs = performance.now() - t0;
-    if (pageMs > maxPageMs.value) maxPageMs.value = pageMs;
-    if (firstPageMs === null) {
-      firstPageMs = performance.now() - loadStart;
-      requestAnimationFrame(() => {
-        loadTiming.value = {
-          ...loadTiming.value,
-          firstPage: firstPageMs,
-          maxPage: maxPageMs.value,
-          loaded: loadedCount.value,
-        };
-        saveTiming({ ...loadTiming.value });
-      });
-    }
   } catch (error) {
     console.error(`加载第 ${i} 页失败:`, error);
   }
+};
+
+// 尺寸来自真实上屏的 <img>：解码只发生一次，load 事件就是“这一页真的能看见”的时刻
+const onImgLoad = (i, event) => {
+  const slot = pageSlots.value[i];
+  if (!slot || !slot.src) return;
+  const img = event.target;
+  slot.w = img.naturalWidth;
+  slot.h = img.naturalHeight;
+  if (slot.t0) {
+    const pageMs = performance.now() - slot.t0;
+    if (pageMs > maxPageMs.value) maxPageMs.value = pageMs;
+  }
+  if (firstPageMs === null) {
+    firstPageMs = performance.now() - loadStart;
+    requestAnimationFrame(() => {
+      loadTiming.value = {
+        ...loadTiming.value,
+        firstPage: firstPageMs,
+        maxPage: maxPageMs.value,
+        loaded: loadedCount.value,
+      };
+      saveTiming({ ...loadTiming.value });
+    });
+  }
+};
+
+const onImgError = (i, event) => {
+  console.error(`第 ${i} 页图片解码失败:`, event);
 };
 
 const pump = () => {
@@ -145,10 +166,12 @@ const setupObserver = () => {
 };
 
 const jump = (id) => {
+  const prev = current.value;
+  const far = Math.abs(id - prev) > SMOOTH_MAX_DISTANCE;
   current.value = id;
   index.value.nowIndex = id;
   updateWindow();
-  containerRef.value.children[id]?.scrollIntoView({ behavior: "smooth" });
+  containerRef.value.children[id]?.scrollIntoView({ behavior: far ? "auto" : "smooth" });
 };
 
 const left = () => {
@@ -161,6 +184,26 @@ const right = () => {
   if (i < pageSlots.value.length) jump(i);
 };
 
+// 底部滑块跳页：id 为 0 基页码。拖动过程中值连续变化，
+// 只更新索引（dock 页码跟随），防抖后按最终目标一次性加载窗口并跳页，
+// 避免每帧 smooth 滚动互相打断、以及目标页被 updateWindow 卸载导致滚不到。
+const slider = (id) => {
+  if (!sliderActive) {
+    sliderActive = true;
+    sliderOrigin = current.value; // 拖动/点击开始时的真实页（滚动起点）
+  }
+  current.value = id;
+  index.value.nowIndex = id;
+  if (sliderTimer) clearTimeout(sliderTimer);
+  sliderTimer = setTimeout(() => {
+    sliderTimer = null;
+    sliderActive = false;
+    updateWindow(); // 按最终目标页加载窗口（目标页 ± WINDOW）
+    const far = Math.abs(id - sliderOrigin) > SMOOTH_MAX_DISTANCE;
+    containerRef.value.children[id]?.scrollIntoView({ behavior: far ? "auto" : "smooth" });
+  }, SLIDER_DEBOUNCE_MS);
+};
+
 onMounted(async () => {
   loadStart = performance.now();
   try {
@@ -168,11 +211,14 @@ onMounted(async () => {
     book.value = result.book;
     toces.value = result.toces;
     index.value.total = book.value.sections.length;
-    pageSlots.value = book.value.sections.map((s) => ({ id: s.id, src: null, w: null, h: null }));
+    pageSlots.value = book.value.sections.map((s) => ({ id: s.id, src: null, w: null, h: null, t0: 0 }));
     loadTiming.value = { ...result.timing, loaded: 0 };
     await nextTick();
     setupObserver();
     updateWindow();
+    const start = await getProgress(bookId.value, index.value.total);
+    if (start > 0) jump(start);
+    progressReady.value = true;
   } catch (error) {
     console.error("打开漫画失败:", error);
   }
@@ -180,6 +226,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   observer?.disconnect();
+  if (sliderTimer) clearTimeout(sliderTimer);
   book.value?.destroy?.();
 });
 
@@ -190,13 +237,13 @@ const saveTiming = async (timing) => {
     const content = new TextEncoder().encode(
       JSON.stringify({ file: testPath, ...timing, at: new Date().toISOString() })
     );
-    await writeFile("resource/data/timing.json", content, { baseDir: useBooks().baseSrc });
+    await writeFile("cover-cache/timing.json", content, { baseDir: BaseDirectory.AppData });
   } catch (error) {
     console.error("写入计时失败:", error);
   }
 };
 
-defineExpose({ left, right, jump });
+defineExpose({ left, right, jump, slider });
 </script>
 
 <template>
@@ -209,10 +256,17 @@ defineExpose({ left, right, jump });
       :data-key="i"
       :style="slot.w ? { aspectRatio: `${slot.w} / ${slot.h}` } : null"
     >
-      <img v-if="slot.src" :src="slot.src" decoding="async" alt="" />
+      <img
+        v-if="slot.src"
+        :src="slot.src"
+        decoding="async"
+        alt=""
+        @load="onImgLoad(i, $event)"
+        @error="onImgError(i, $event)"
+      />
     </div>
   </div>
-  <div v-if="loadTiming" class="timing-overlay">
+  <div v-if="loadTiming && settings.showParseTiming" class="timing-overlay">
     <div>打开总耗时(首帧): {{ (loadTiming.firstPage ?? loadTiming.total).toFixed(0) }} ms</div>
     <div>
       解析 {{ loadTiming.open.toFixed(0) }} ms · 已加载 {{ loadedCount }}/{{ pageSlots.length }} 页 ·

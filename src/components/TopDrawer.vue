@@ -26,7 +26,14 @@ const saveCss = () => booksStore.setCss();
 const quit = async () => {
   try {
     const from = route.query.from;
-    if (typeof from === "string" && from) {
+    const back = route.query.back;
+    if (back === "search") {
+      // 从搜索结果打开：回搜索页并带原关键词，让 SearchPage 重新渲染结果并恢复位置
+      const q = route.query.q;
+      await router.push({ path: "/search", query: q ? { q } : {} });
+    } else if (back === "home" || back === "shelf" || back === "tags" || back === "browse") {
+      await router.push(`/${back}`);
+    } else if (typeof from === "string" && from) {
       await router.push({ path: "/browse", query: { path: from } });
     } else {
       await router.push(`/`);
@@ -39,14 +46,14 @@ const quit = async () => {
 
 <template>
   <transition name="bar">
-    <header v-if="show" class="reader-bar top glass">
+    <header v-if="show" class="reader-bar top glass" data-tauri-drag-region>
       <button class="bar-ico" title="返回" @click="quit">
         <Icon id="arrow-left" :size="19" />
       </button>
-      <div class="bar-title">
+      <div class="bar-title" data-tauri-drag-region>
         <n-ellipsis :tooltip="false">{{ bookInfo.title }}</n-ellipsis>
       </div>
-      <div class="bar-drag" @mousedown="appWindow.startDragging"></div>
+      <div class="bar-drag" data-tauri-drag-region @mousedown="appWindow.startDragging"></div>
       <div class="bar-page mono">{{ String(now).padStart(2, "0") }}<i>/</i>{{ index.total }}</div>
       <button class="bar-ico" title="阅读设置" @click="showModal = true">
         <Icon id="sliders-horizontal" :size="19" />

@@ -15,6 +15,7 @@ src/wasm
 src-tauri/resource
 src-tauri/target
 src-tauri/gen
+src-tauri/keys
 
 # Editor directories and files
 .vscode/*
@@ -33,3 +34,10 @@ src-tauri/gen
 scripts/chrome-profile/
 scripts/*.png
 scripts/.cdp-chrome/
+
+# 测试产物与运行残留
+testdata/
+.dsh-vision-toolkit/
+.tmp/
+.tauri-pid
+.vite-pid

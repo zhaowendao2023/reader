@@ -19,12 +19,19 @@ onMounted(async () => {
 
 const active = ref(false); // TOC 目录面板
 const expanded = ref(false); // 展开排版设置
-const now = computed(() => index.value.nowIndex + 1);
+// 可写 computed：滑块 v-model 需要 setter，拖动时经 moveMethods.slider 跳页（0 基索引）
+const now = computed({
+  get: () => index.value.nowIndex + 1,
+  set: (val) => moveMethods.slider?.(Number(val) - 1),
+});
 const themeIcon = computed(() => (useBooks().theme ? "sun" : "moon"));
 
 const isTextBook = computed(() =>
   bookInfo.value &&
   (bookInfo.value.ext.endsWith("epub") || bookInfo.value.ext.endsWith("mobi"))
+);
+const isComic = computed(() =>
+  bookInfo.value && (bookInfo.value.ext.endsWith("cbz") || bookInfo.value.ext.endsWith("zip"))
 );
 
 watch(show, () => {
@@ -61,24 +68,28 @@ const selectedKeys = ref([]);
 
     <!-- 底部悬浮坞 -->
     <transition name="bar">
-      <div v-if="show" class="reader-dock glass">
-        <button class="dock-btn" title="上一页" @click="moveMethods.left">
-          <Icon id="chevron-left" :size="20" />
+      <div v-if="show" class="reader-dock glass" :class="{ 'reader-dock--comic': isComic }" data-tauri-drag-region>
+        <!-- 目录 / 图片列表入口固定在最左侧，方便单手展开 -->
+        <button class="dock-btn dock-toc-btn" :class="{ on: active }" title="目录" @click="toggleToc">
+          <Icon id="list" :size="19" />
         </button>
-        <div class="dock-slider">
-          <span class="dock-page mono">{{ String(now).padStart(2, "0") }}</span>
-          <n-slider v-model:value="now" :step="1" :max="index.total" :min="1" />
-          <span class="dock-page mono">{{ index.total }}</span>
+        <!-- 翻页与进度属于同一组；漫画竖屏时整组上移到底栏按钮之上。 -->
+        <div class="dock-navigation">
+          <button class="dock-btn" title="上一页" @click="moveMethods.left">
+            <Icon id="chevron-left" :size="20" />
+          </button>
+          <div class="dock-slider">
+            <span class="dock-page mono">{{ String(now).padStart(2, "0") }}</span>
+            <n-slider v-model:value="now" :step="1" :max="index.total" :min="1" />
+            <span class="dock-page mono">{{ index.total }}</span>
+          </div>
+          <button class="dock-btn" title="下一页" @click="moveMethods.right">
+            <Icon id="chevron-right" :size="20" />
+          </button>
         </div>
-        <button class="dock-btn" title="下一页" @click="moveMethods.right">
-          <Icon id="chevron-right" :size="20" />
-        </button>
 
         <span class="dock-divider"></span>
 
-        <button class="dock-btn" :class="{ on: active }" title="目录" @click="toggleToc">
-          <Icon id="list" :size="19" />
-        </button>
         <button
           v-if="isTextBook"
           class="dock-btn"
@@ -214,6 +225,14 @@ const selectedKeys = ref([]);
   }
 }
 
+.dock-navigation {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .dock-page {
   font-size: 11px;
   letter-spacing: 0.12em;
@@ -311,6 +330,54 @@ const selectedKeys = ref([]);
   padding: 60px 20px;
   color: var(--text-3);
   font-size: 13px;
+}
+
+/* 移动端竖屏：将漫画翻页与进度整体放在操作栏上方，底栏只保留功能按钮。 */
+@media (max-width: 899px) and (orientation: portrait) {
+  .bottom-chrome {
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+  }
+
+  .reader-dock--comic {
+    .dock-navigation {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 10px);
+      min-height: 54px;
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: var(--shadow-1);
+      backdrop-filter: blur(16px) saturate(1.2);
+
+      .dock-slider {
+        padding: 0 4px;
+      }
+    }
+
+    .dock-divider {
+      margin-left: auto;
+    }
+  }
+}
+
+/* 手机章节面板收窄，仍保留足够的标题和树形目录阅读空间。 */
+@media (max-width: 640px) {
+  .toc-panel {
+    width: min(300px, 78vw);
+    border-radius: 0 18px 18px 0;
+  }
+
+  .toc-head {
+    gap: 11px;
+    padding: 18px 16px 15px;
+  }
+
+  .toc-body {
+    padding: 10px 8px 20px;
+  }
 }
 
 /* 过渡 */

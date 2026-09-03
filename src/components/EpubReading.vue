@@ -1,16 +1,18 @@
 <script setup>
 import { useBooks } from "../store/loadBooks";
+import { getProgress } from "../utils/progress";
 const index = inject("index");
 const toces = inject("toces");
 const containerRef = ref(null);
 const book = ref(null);
 const bookInfo = inject("bookInfo");
+const bookId = inject("bookId");
+const progressReady = inject("progressReady");
 const images = ref([]);
 const cssVars = useBooks().cssVarsData;
 
 const loadEPUB = async (bookPath) => {
   book.value = await getEPUB(bookPath);
-  console.log(book.value);
 
   for (const section of book.value.sections) {
     const doc = await section.createDocument();
@@ -47,6 +49,12 @@ onMounted(async () => {
   index.value.total = Math.ceil(
     containerRef.value.scrollHeight / containerRef.value.clientHeight
   );
+  const start = await getProgress(bookId.value, index.value.total);
+  if (start > 0) {
+    containerRef.value.scrollTop = start * containerRef.value.clientHeight;
+    index.value.nowIndex = start;
+  }
+  progressReady.value = true;
 });
 
 onUnmounted(() => {
@@ -86,10 +94,20 @@ const right = () => {
   });
 };
 
+// 底部滑块跳页：n 为视口屏序号（0 基），滚动到第 n 屏
+const slider = (n) => {
+  index.value.nowIndex = n;
+  containerRef.value?.scrollTo({
+    top: n * containerRef.value.clientHeight,
+    behavior: "smooth",
+  });
+};
+
 defineExpose({
   jump,
   left,
   right,
+  slider,
 });
 const x = ref(0);
 const y = ref(0);

@@ -18,6 +18,21 @@ const routes = [
     component: () => import('@/components/LayOut.vue')
   },
   {
+    path: '/search',         // 搜索结果独立页
+    name: 'Search',
+    component: () => import('@/components/LayOut.vue')
+  },
+  {
+    path: '/tags',           // 按标签浏览
+    name: 'Tags',
+    component: () => import('@/components/LayOut.vue')
+  },
+  {
+    path: '/settings',       // 设置页
+    name: 'Settings',
+    component: () => import('@/components/LayOut.vue')
+  },
+  {
     path: '/reading/:id',    // 阅读页路径
     name: 'Reading',
     component: () => import('@/components/Reading.vue') // 阅读组件
@@ -36,6 +51,11 @@ const routes = [
     path: '/media/:id',
     name: 'MediaViewer',
     component: () => import('@/components/MediaViewer.vue')
+  },
+  {
+    path: '/media-pack/:id',
+    name: 'MediaPack',
+    component: () => import('@/components/MediaPack.vue')
   }
 ]
 

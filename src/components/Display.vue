@@ -1,159 +1,204 @@
 <script setup>
-import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
+import { useSettings } from "../store/settings";
 import { useUI } from "../store/ui";
-import { covers, canonKey, enqueueCover, prefetchCovers, stopPrefetch } from "../store/browserCache";
+import { invoke } from "@tauri-apps/api/core";
+import { covers, canonKey, enqueueCover, prefetchCovers } from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
-import { extOf, isVideo, isImage } from "../utils/media";
+import { isVideo } from "../utils/media";
+import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
+import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
+import { createScrollRestorer } from "../utils/scrollAnchor";
+import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { useItemActions } from "../utils/itemActions";
+import { useCellLongPress } from "../utils/longPress";
+import { useLazyCovers } from "../utils/lazyCovers";
 import Icon from "./Icon.vue";
+import MediaCover from "./MediaCover.vue";
 
 const booksStore = useBooks();
+const settings = useSettings();
 const ui = useUI();
 const router = useRouter();
 const favoriteDirs = computed(() => booksStore.favoriteDirs);
+const { copyPath, revealPath, requestDelete, editTags } = useItemActions({
+  onDeleted: async (item) => {
+    if (currentDir.value) {
+      const dir = favoriteDirs.value.find((d) => d.path === currentDir.value.path);
+      // 统一用规范化 key 做身份比较，不再混用 b.key（comic 的 canonKey 路径）
+      // 与 b.path（media 的原始路径）：Windows 下大小写/分隔符不一致时，
+      // 混用比较会漏删条目，导致 books.length 计数残留。
+      const removedKey = canonKey(item.path || item.key);
+      books.value = books.value.filter((b) => canonKey(b.key || b.path) !== removedKey);
+      if (dir) {
+        delete counts[dir.path];
+        delete dirCoverSource[dir.path];
+        loadCount(dir, sharedRows);
+      }
+    } else {
+      // 总览态没有 currentDir：按 refreshLibraryForDelete 的 roots 过滤语义，
+      // 找出包含（或等于）被删路径的收藏根，失效并重扫其计数——
+      // 否则删除后计数要么永久 "…"（键被删但无人重扫），要么陈旧（guard 挡住回填）。
+      // 删除已由 itemActions 完成 DB 同步，这里刷新一次索引行让重扫拿到最新状态。
+      const sep = booksStore.platform === "windows" ? "\\" : "/";
+      const deletedKey = canonKey(item.path || item.key);
+      const rows = await loadIndexRows();
+      for (const d of favoriteDirs.value) {
+        const rootKey = canonKey(d.path);
+        if (
+          rootKey === deletedKey ||
+          deletedKey.startsWith(rootKey.endsWith(sep) ? rootKey : rootKey + sep)
+        ) {
+          delete counts[d.path];
+          delete dirCoverSource[d.path];
+          loadCount(d, rows);
+        }
+      }
+    }
+  },
+});
 const counts = reactive({});
+// 每个收藏分组对应的封面来源（目录自身的 group/pack 封面，或漫画目录第一本书的封面）
+const dirCoverSource = reactive({});
 
-const COMIC_EXTS = ["cbz", "zip", "epub", "mobi"];
+// 索引行共享：同一轮内多个收藏夹的 loadCount/openDir 复用同一份 list_items，
+// 避免每个目录一次全量 IPC。删除/收藏变更等 DB 变化后由调用方刷新。
+let sharedRows = null;
+const loadIndexRows = async () => {
+  try {
+    sharedRows = await invoke("list_items");
+  } catch (error) {
+    console.error("list_items failed:", error);
+    sharedRows = null;
+  }
+  return sharedRows;
+};
+const rowsFor = (rows) => rows ?? sharedRows;
 
 const currentDir = ref(null);
 const books = ref([]);
 const loading = ref(false);
 
-const loadCount = async (dir) => {
+const loadCount = async (dir, rows) => {
   if (counts[dir.path] !== undefined) return;
   try {
-    counts[dir.path] = await countFolder(dir.path, 0);
+    const result = await scanFavoriteTree(dir.path, dir.name, 12, rowsFor(rows));
+    // 扫描结果写回 SQLite 索引（含目录 mtime）：旧库没有 mtime 时首次全扫，
+    // 写回后下次进入同一收藏夹即走 DB 快路径，不再整树 readDir。
+    if (result.dirty) {
+      try {
+        const entries = flattenScan(result, dir);
+        await syncFavoriteToDb(dir, entries);
+      } catch (error) {
+        console.error("loadCount sync failed:", dir.path, error);
+      }
+    }
+    counts[dir.path] = result.count;
+    const root = result.root;
+    let source = null;
+    if (root) {
+      if (root.kind === "group") source = { key: root.path, kind: "group" };
+      else if (root.kind === "video-folder" || root.kind === "image-folder" || root.kind === "media-folder") {
+        source = { key: root.path, kind: root.kind };
+      }
+    }
+    if (!source && result.comics.length) {
+      source = { key: result.comics[0].key, kind: "comic" };
+    }
+    dirCoverSource[dir.path] = source;
+    if (source) enqueueCover(source.key, true, source.kind);
   } catch (error) {
+    console.error("LOADCOUNT-FAIL", dir.path, error);
     counts[dir.path] = 0;
   }
 };
 
-// 递归统计收藏夹内的漫画/视频/图包数量
-const countFolder = async (base, depth) => {
-  if (depth > 12) return 0;
-  let raw;
-  try {
-    raw = await readDir(base);
-  } catch {
-    return 0;
-  }
-  let n = 0;
-  for (const e of raw) {
-    if (e.name.startsWith(".")) continue;
-    if (e.isDirectory) {
-      n += await countFolder(joinPath(base, e.name), depth + 1);
-    } else if (e.isFile && (isComicFile(e.name) || isVideo(e.name) || isImage(e.name))) {
-      n++;
-    }
-  }
-  return n;
+const dirCoverKey = (dir) => {
+  const source = dirCoverSource[dir.path];
+  return source ? canonKey(source.key) : "";
 };
 
 watch(
   () => booksStore.favoriteDirs.map((d) => d.path).join("\u0000"),
-  () => {
-    for (const d of booksStore.favoriteDirs) loadCount(d);
+  async () => {
+    // 只拉一次索引行，所有收藏夹的 loadCount 共享，避免每目录一次全量 list_items IPC
+    const rows = await loadIndexRows();
+    for (const d of booksStore.favoriteDirs) loadCount(d, rows);
   },
   { immediate: true }
 );
 
-const joinPath = (base, name) => {
-  const sep = booksStore.platform === "windows" ? "\\" : "/";
-  return base.endsWith(sep) ? base + name : base + sep + name;
-};
-
-const isComicFile = (name) => {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return COMIC_EXTS.includes(name.slice(dot + 1).toLowerCase());
-};
-
 const openDir = async (dir) => {
-  currentDir.value = { name: dir.name, path: dir.path };
-  savedScroll = 0;
+  // 进入收藏夹：先把总览位置/锚点固化（供「返回收藏」时恢复），再清掉该目录残留
+  // 快照，让每次进入目录从顶部开始。capture 只写记忆不停采，不影响目录内滚动记录。
+  displayScroll.capture({ forceAnchor: true });
+  displayScroll.clear({ stateKey: "display:dir", anchorKey: "display:dir" });
   loading.value = true;
   books.value = [];
   try {
-    const acc = { comics: [], packs: new Map(), images: [] };
-    await collectFolder(dir.path, 0, acc);
-    const list = [...acc.comics, ...acc.packs.values(), ...acc.images];
+    const result = await scanFavoriteTree(dir.path, dir.name, 12, sharedRows);
+    // 与 loadCount 相同：扫描结果写回索引（mtime），让下次进入走 DB 快路径
+    if (result.dirty) {
+      try {
+        const entries = flattenScan(result, dir);
+        await syncFavoriteToDb(dir, entries);
+      } catch (error) {
+        console.error("openDir sync failed:", dir.path, error);
+      }
+    }
+    const root = result.root;
+    currentDir.value = { name: dir.name, path: dir.path };
+    displayScroll.clear({ stateKey: "display:dir", anchorKey: "display:dir" });
+    // 收藏根自身直接含媒体文件时（pack）：把文件展开成列表条目，与子目录、
+    // 漫画一起展示——收藏页一律列表化展示，不再整包跳图包查看器。
+    const fileNodes = (root?.files || []).map((f) => ({
+      name: f.name,
+      key: canonKey(f.path),
+      path: f.path,
+      dir: root.path,
+      folder: dir.name,
+      kind: isVideo(f.name) ? "video" : "image",
+      ext: f.ext || "",
+      count: 0,
+      videoCount: isVideo(f.name) ? 1 : 0,
+      imageCount: isVideo(f.name) ? 0 : 1,
+      childCount: 0,
+      children: [],
+      files: [],
+    }));
+    const list = [...(root?.children || []), ...fileNodes];
     list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true }));
-    books.value = list;
+    books.value = [...list, ...result.comics];
   } catch (error) {
+    console.error("OPENDIR-FAIL", dir.path, error);
     books.value = [];
   } finally {
     loading.value = false;
+    // 进入新收藏夹从顶部开始：总览滚深时浏览器按内容长度 clamp 的 scrollTop 不可靠，
+    // 显式归零（后续 onActivated / backToFavs 的恢复不经过这里）。
+    nextTick(() => {
+      if (pageRef.value) pageRef.value.scrollTop = 0;
+    });
     observeCovers();
   }
 };
 
-// 递归打平收藏夹：漫画单本全量列出，视频按目录聚成系列，图包单文件
-const collectFolder = async (base, depth, acc) => {
-  if (depth > 12) return;
-  let raw;
-  try {
-    raw = await readDir(base);
-  } catch {
-    return;
-  }
-  for (const e of raw) {
-    if (e.name.startsWith(".")) continue;
-    const full = joinPath(base, e.name);
-    if (e.isDirectory) {
-      await collectFolder(full, depth + 1, acc);
-    } else if (e.isFile) {
-      if (isComicFile(e.name)) {
-        acc.comics.push({
-          name: e.name,
-          key: canonKey(full),
-          path: full,
-          ext: extOf(e.name),
-          kind: "comic",
-        });
-      } else if (isVideo(e.name)) {
-        const pk = canonKey(base);
-        let pack = acc.packs.get(pk);
-        if (!pack) {
-          const dirName = base.split(/[\\/]/).filter(Boolean).pop() || base;
-          pack = {
-            name: dirName,
-            key: pk,
-            path: base,
-            dir: base,
-            ext: "video",
-            kind: "video-folder",
-            count: 0,
-          };
-          acc.packs.set(pk, pack);
-        }
-        pack.count++;
-      } else if (isImage(e.name)) {
-        acc.images.push({
-          name: e.name,
-          key: canonKey(full),
-          path: full,
-          ext: extOf(e.name),
-          kind: "image",
-          dir: base,
-        });
-      }
-    }
-  }
-};
-
-const backToFavs = () => {
+const backToFavs = ({ restore = true } = {}) => {
   currentDir.value = null;
   books.value = [];
-  savedScroll = 0;
-  coverObserver?.disconnect();
-  stopPrefetch();
+  lazyCovers.reset();
+  if (restore) {
+    // 从目录返回总览：恢复到进入目录前浏览到的位置（openDir 时已固化 overview 锚点）
+    void displayScroll.restoreAfterRender();
+  }
 };
 
-// 侧边栏点击「收藏」：直接回到收藏文件夹总览
+// 侧边栏点击「收藏」：直接回到收藏文件夹总览顶部（清掉上次位置，不恢复）
 watch(
   () => ui.navReset,
   () => {
-    backToFavs();
+    backToFavs({ restore: false });
+    displayScroll.clear();
     nextTick(() => {
       if (pageRef.value) pageRef.value.scrollTop = 0;
     });
@@ -163,11 +208,7 @@ watch(
 const openComic = async (book) => {
   const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
   const id = await calculateHash(key);
-  if (!booksStore.getBook(id)) {
-    const title = book.name.slice(0, book.name.lastIndexOf("."));
-    await booksStore.addBook({ [id]: { title, path: key, ext: book.ext } });
-  }
-  router.push({ path: `/reading/${id}`, query: { back: "shelf" } });
+  router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext, back: "shelf" } });
 };
 
 const openVideo = async (item) => {
@@ -179,97 +220,266 @@ const openVideo = async (item) => {
   });
 };
 
-const openImage = async (item) => {
+const openImagePack = async (item) => {
+  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
+  const id = await calculateHash(key);
+  const p = item.path || item.key;
+  router.push({
+    path: `/media/${id}`,
+    query:
+      item.kind === "image"
+        ? { path: p, name: item.name } // 单张图片：直接展示
+        : { dir: p, path: p, name: item.name }, // 图包目录：列出并定位
+  });
+};
+
+const openMediaPack = async (item) => {
   const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
   const id = await calculateHash(key);
   router.push({
-    path: `/media/${id}`,
-    query: { dir: item.dir || currentDir.value?.path, path: item.path || item.key, name: item.name },
+    path: `/media-pack/${id}`,
+    query: { dir: item.path || item.key, name: item.name },
   });
 };
 
 const openBook = (book) => {
-  if (book.kind === "video" || book.kind === "video-folder") return openVideo(book);
-  if (book.kind === "image") return openImage(book);
-  return openComic(book);
+  displayScroll.checkpoint();
+  if (book.kind === "comic") return openComic(book);
+  if (book.kind === "video") return openVideo(book);
+  if (book.kind === "image") return openImagePack(book);
+  return openMediaPack(book);
 };
 
 const removeDir = async (dir) => {
-  await booksStore.removeFavoriteDir(dir.path);
+  try {
+    await booksStore.removeFavoriteDir(dir.path);
+  } catch (error) {
+    // 移除收藏失败（如 DB 忙）：收藏仍保留，不能丢计数
+    console.error("remove favorite failed:", dir.path, error);
+  }
   delete counts[dir.path];
+  delete dirCoverSource[dir.path];
+  // 移除失败时收藏仍在列表里：重扫回填计数，避免总览永久 "…"
+  if (booksStore.favoriteDirs.some((d) => d.path === dir.path)) loadCount(dir, sharedRows);
 };
 
-let coverObserver = null;
-const observedCovers = new Set();
+const bookMap = new Map();
+const plateMap = new Map();
+const rebuildMaps = () => {
+  bookMap.clear();
+  plateMap.clear();
+  for (const b of books.value) bookMap.set(b.key, b);
+  for (const d of favoriteDirs.value) plateMap.set(d.path, d);
+};
+watch([books, favoriteDirs], rebuildMaps, { immediate: true });
+
+const openPlateMenu = (dir, x, y) => {
+  const isAndroid = booksStore.platform === "android";
+  openContextMenu({
+    x,
+    y,
+    items: [
+      {
+        id: "open",
+        label: "打开",
+        icon: "folder",
+        onSelect: () => {
+          closeContextMenu();
+          openDir(dir);
+        },
+      },
+      {
+        id: "copy",
+        label: "复制路径",
+        icon: "book-copy",
+        onSelect: () => copyPath(dir),
+      },
+      {
+        id: "tags",
+        label: "编辑标签",
+        icon: "tag",
+        onSelect: () => editTags(dir),
+      },
+      {
+        id: "reveal",
+        label: "在文件管理器中显示",
+        icon: "folder-open",
+        hidden: isAndroid,
+        onSelect: () => revealPath(dir),
+      },
+      {
+        id: "unfav",
+        label: "取消收藏",
+        icon: "star",
+        onSelect: () => {
+          closeContextMenu();
+          removeDir(dir);
+        },
+      },
+      {
+        id: "delete",
+        label: "删除",
+        icon: "trash",
+        danger: true,
+        onSelect: () => requestDelete(dir, true),
+      },
+    ],
+  });
+};
+
+const openBookMenu = (book, x, y) => {
+  const isAndroid = booksStore.platform === "android";
+  // 只有目录类条目（收藏分组/图包/媒体夹）删除时按整目录递归删，
+  // 单文件视频/图片按文件删
+  const isDir = ["group", "pack", "video-folder", "image-folder", "media-folder"].includes(book.kind);
+  openContextMenu({
+    x,
+    y,
+    items: [
+      {
+        id: "open",
+        label: "打开",
+        icon: book.kind === "comic" ? "book-open" : "play",
+        onSelect: () => {
+          closeContextMenu();
+          openBook(book);
+        },
+      },
+      {
+        id: "copy",
+        label: "复制路径",
+        icon: "book-copy",
+        onSelect: () => copyPath(book),
+      },
+      {
+        id: "tags",
+        label: "编辑标签",
+        icon: "tag",
+        onSelect: () => editTags(book),
+      },
+      {
+        id: "reveal",
+        label: "在文件管理器中显示",
+        icon: "folder-open",
+        hidden: isAndroid,
+        onSelect: () => revealPath(book),
+      },
+      {
+        id: "delete",
+        label: "删除",
+        icon: "trash",
+        danger: true,
+        onSelect: () => requestDelete(book, isDir),
+      },
+    ],
+  });
+};
+
+const onFavContextMenu = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const cell = e.target?.closest?.(".plate, .book-cell");
+  const key = cell?.dataset?.key;
+  const hit = key ? (cell?.classList.contains("plate") ? plateMap.get(key) : bookMap.get(key)) : null;
+  if (hit) {
+    if (currentDir.value) openBookMenu(hit, e.clientX, e.clientY);
+    else openPlateMenu(hit, e.clientX, e.clientY);
+  } else {
+    openGenericMenu(e.clientX, e.clientY);
+  }
+};
+
+const longPress = useCellLongPress({
+  selector: ".plate, .book-cell",
+  resolveHit: (cell) =>
+    cell.classList.contains("plate") ? plateMap.get(cell.dataset.key) : bookMap.get(cell.dataset.key),
+  onHit: (hit, x, y) => {
+    if (currentDir.value) openBookMenu(hit, x, y);
+    else openPlateMenu(hit, x, y);
+  },
+  onEmpty: (x, y) => openGenericMenu(x, y),
+});
+
+// 目录类条目（收藏分组/图包/媒体夹）不做后台批量预取：group 提取成本高，
+// 滚动到可视区时由 IntersectionObserver 按需入队（与 FileBrowser 的 !isDir 过滤一致）。
+const DIR_KINDS = new Set(["group", "pack", "video-folder", "image-folder", "media-folder"]);
+
+const lazyCovers = useLazyCovers({
+  selector: ".fav-page .book-cover, .fav-page .media-cover",
+  prefetch: () => {
+    prefetchCovers(books.value.filter((b) => !DIR_KINDS.has(b.kind)));
+  },
+});
+const observeCovers = () => lazyCovers.observe();
 
 const pageRef = ref(null);
-let savedScroll = 0;
 
-const onPageScroll = () => {
-  if (pageRef.value) savedScroll = pageRef.value.scrollTop;
-};
+// 锚点按上下文区分：收藏夹总览（overview）与文件夹内书架（dir）各自独立记录，
+// 避免切换上下文时错位。
+const scrollAnchorKey = () => (currentDir.value ? "display:dir" : "display:overview");
+const displayScroll = createScrollRestorer({
+  element: () => pageRef.value,
+  stateKey: scrollAnchorKey,
+  anchorKey: scrollAnchorKey,
+  anchorSelector: ".plate[data-key], .book-cell[data-key]",
+});
+const onPageScroll = () => displayScroll.capture();
 
-const observeCovers = async () => {
-  await nextTick();
-  coverObserver?.disconnect();
-  observedCovers.clear();
-  const nodes = document.querySelectorAll(".fav-page .book-cover");
-  coverObserver = new IntersectionObserver(
-    (list) => {
-      for (const item of list) {
-        if (!item.isIntersecting) continue;
-        const key = item.target.dataset.key;
-        coverObserver?.unobserve(item.target);
-        if (observedCovers.has(key)) continue;
-        observedCovers.add(key);
-        enqueueCover(key, true);
-      }
-    },
-    { rootMargin: "300px" }
-  );
-  for (const node of nodes) coverObserver.observe(node);
-  prefetchCovers(books.value.map((b) => b.key));
-};
-
-watch(books, () => observeCovers());
+watch(books, (list) => {
+  // 列表首次填充后延后标记，其余进入文件夹时列表直接出现、不再重播入场动画
+  if (list.length) markEntrancePlayed("display.folder");
+  observeCovers();
+});
 
 onMounted(() => {
   pageRef.value?.addEventListener("scroll", onPageScroll, { passive: true });
+  // 收藏夹总览的入场动画只在首次挂载播一次，返回总览时直接出现
+  markEntrancePlayed("display.overview");
 });
 
-onActivated(() => {
-  nextTick(() => {
-    if (pageRef.value && savedScroll) pageRef.value.scrollTop = savedScroll;
-  });
+onActivated(async () => {
+  // 系统返回键接管：打开某个收藏夹子目录时，返回键先回到收藏总览
+  // （由 main.js 的 __handleAndroidBack 优先调用）。
+  window.__dirBack = () => {
+    if (currentDir.value) {
+      backToFavs();
+      return true;
+    }
+    return false;
+  };
+  await displayScroll.restoreAfterRender();
   observeCovers();
 });
 
 onDeactivated(() => {
-  coverObserver?.disconnect();
-  stopPrefetch();
+  closeContextMenu();
+  // 已由入口预先冻结时会复用快照；其它离开路径在仍可见时补存一次。
+  displayScroll.checkpoint();
+  lazyCovers.reset();
+  window.__dirBack = undefined;
 });
 
 onUnmounted(() => {
   pageRef.value?.removeEventListener("scroll", onPageScroll);
-  coverObserver?.disconnect();
-  stopPrefetch();
+  lazyCovers.reset();
 });
 
 const totalBooks = computed(() =>
   favoriteDirs.value.reduce((acc, d) => acc + (counts[d.path] || 0), 0)
 );
 
-// 装饰性渐变（收藏夹封面占位）
-const plateStyles = [
-  "linear-gradient(150deg, #ff4d2e 0%, #ff9a3d 55%, #ffd166 100%)",
-  "linear-gradient(150deg, #7a9e00 0%, #a3c92a 55%, #d6ff3f 100%)",
-  "linear-gradient(150deg, #1f6feb 0%, #5b8cff 60%, #9db8ff 100%)",
-  "linear-gradient(150deg, #9b5de5 0%, #c77dff 55%, #e0aaff 100%)",
-];
 </script>
 
 <template>
-  <div class="fav-page" ref="pageRef">
+  <div
+    class="fav-page"
+    ref="pageRef"
+    @contextmenu="onFavContextMenu"
+    @touchstart="longPress.onTouchStart"
+    @touchmove="longPress.onTouchMove"
+    @touchend="longPress.onTouchEnd"
+    @touchcancel="longPress.onTouchCancel"
+  >
     <!-- 文件夹内的书架 -->
     <template v-if="currentDir">
       <section class="shelf-hero shelf-hero--inner reveal">
@@ -293,36 +503,40 @@ const plateStyles = [
         <li
           v-for="(book, i) in books"
           :key="book.key"
-          class="book-cell reveal"
-          :style="{ animationDelay: `${Math.min(i * 40, 500)}ms` }"
-          @click="openBook(book)"
+          class="book-cell"
+          :class="{ reveal: entranceActive('display.folder') }"
+          :data-key="book.key"
+          :style="entranceActive('display.folder') ? { animationDelay: `${Math.min(i * 40, 500)}ms` } : undefined"
+          @click="longPress.onCellClick(() => openBook(book))"
         >
-          <div class="book-cover" :class="{ 'book-cover--media': book.kind !== 'comic' }" :data-key="book.key">
+          <MediaCover
+            v-if="book.kind !== 'comic'"
+            :kind="book.kind"
+            :ext="book.ext"
+            :count="book.count"
+            :child-count="book.childCount"
+            :video-count="book.videoCount"
+            :image-count="book.imageCount"
+            :index="i"
+            :src="covers[book.key]"
+            :meta="settings.showSource"
+            :data-key="book.key"
+            :data-kind="book.kind"
+          />
+          <div v-else class="book-cover" :data-key="book.key">
             <img
-              v-if="book.kind === 'comic' && covers[book.key]"
+              v-if="covers[book.key]"
               :src="covers[book.key]"
               class="book-cover-img"
               alt=""
               loading="lazy"
               decoding="async"
             />
-            <span v-else class="book-cover-ph">
-              <Icon
-                :id="book.kind === 'video' || book.kind === 'video-folder' ? 'play' : book.kind === 'image' ? 'image' : 'book-open'"
-                :size="34"
-              />
-            </span>
-            <span class="book-ext mono">
-              {{ book.kind === "video-folder" ? book.count + " 集" : book.ext.toUpperCase() }}
-            </span>
-            <span v-if="book.kind !== 'comic'" class="media-overlay">
-              <span
-                class="media-glyph"
-                :class="{ video: book.kind === 'video' || book.kind === 'video-folder' }"
-              >
-                <Icon :id="book.kind === 'video' || book.kind === 'video-folder' ? 'play' : 'scan'" :size="20" />
-              </span>
-            </span>
+            <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
+            <template v-if="settings.showSource">
+              <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
+              <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
+            </template>
           </div>
           <div class="book-name">
             <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
@@ -364,18 +578,27 @@ const plateStyles = [
         <li
           v-for="(dir, i) in favoriteDirs"
           :key="dir.path"
-          class="plate reveal"
-          :style="{ animationDelay: `${Math.min(i * 60, 600)}ms` }"
-          @click="openDir(dir)"
+          class="plate"
+          :class="{ reveal: entranceActive('display.overview') }"
+          :data-key="dir.path"
+          :style="entranceActive('display.overview') ? { animationDelay: `${Math.min(i * 60, 600)}ms` } : undefined"
+          @click="longPress.onCellClick(() => openDir(dir))"
         >
-          <div class="plate-art" :style="{ background: plateStyles[i % plateStyles.length] }">
-            <span class="plate-art-no mono">{{ String(i + 1).padStart(2, "0") }}</span>
-            <Icon id="folder" :size="34" class="plate-ico" :stroke-width="1.75" />
-            <span class="plate-art-line"></span>
+          <div class="plate-art">
+            <img
+              v-if="covers[dirCoverKey(dir)]"
+              :src="covers[dirCoverKey(dir)]"
+              class="plate-cover"
+              alt=""
+              loading="lazy"
+              decoding="async"
+            />
+            <template v-else>
+              <span class="plate-art-no mono">{{ String(i + 1).padStart(2, "0") }}</span>
+              <Icon id="folder" :size="34" class="plate-ico" :stroke-width="1.75" />
+              <span class="plate-art-line"></span>
+            </template>
           </div>
-          <button class="plate-remove" title="取消收藏" @click.stop="removeDir(dir)">
-            <Icon id="x" :size="14" />
-          </button>
           <div class="plate-body">
             <div class="plate-name"><n-ellipsis :tooltip="false">{{ dir.name }}</n-ellipsis></div>
             <div class="plate-count mono">{{ counts[dir.path] === undefined ? "…" : counts[dir.path] }} ENTRIES</div>
@@ -400,6 +623,11 @@ const plateStyles = [
     radial-gradient(60% 45% at 85% -5%, var(--accent-soft), transparent 60%),
     radial-gradient(45% 40% at -10% 30%, color-mix(in srgb, var(--accent-2) 8%, transparent), transparent 60%),
     var(--bg-0);
+}
+
+/* 深色模式：去掉暖橙/荧光绿柔光，只保留全局暗角降亮度，避免焦黄滤镜感 */
+:global(.theme-dark) .fav-page {
+  background: var(--bg-0);
 }
 
 /* 幽灵水印 */
@@ -519,20 +747,14 @@ const plateStyles = [
   cursor: pointer;
   border-radius: var(--radius-lg);
   background: var(--bg-2);
-  border: 1px solid var(--line);
   overflow: hidden;
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out), border-color 0.3s;
+  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
 
   &:hover {
     transform: translateY(-8px);
-    border-color: var(--line-strong);
     box-shadow: var(--shadow-2);
     .plate-art {
       transform: scale(1.05);
-    }
-    .plate-remove {
-      opacity: 1;
-      transform: translateY(0);
     }
   }
 }
@@ -543,7 +765,18 @@ const plateStyles = [
   display: grid;
   place-items: center;
   overflow: hidden;
+  background: var(--bg-2);
   transition: transform 0.6s var(--ease-out);
+
+  .plate-cover {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
 
   .plate-art-no {
     position: absolute;
@@ -572,30 +805,6 @@ const plateStyles = [
 
 .plate:hover .plate-ico {
   transform: translateY(-3px) scale(1.08);
-}
-
-.plate-remove {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 2;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: none;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  backdrop-filter: blur(8px);
-  cursor: pointer;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: all 0.3s var(--ease-out);
-
-  &:hover {
-    background: var(--accent);
-  }
 }
 
 .plate-body {
@@ -635,6 +844,9 @@ const plateStyles = [
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  /* 屏外卡片跳过布局/绘制：封面数量多时避免快速滚动整屏 reflow/白屏 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
 }
 
 .book-cover {
@@ -681,50 +893,6 @@ const plateStyles = [
   place-items: center;
 }
 
-.book-cover--media {
-  background:
-    radial-gradient(80% 60% at 30% 20%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%),
-    var(--bg-2);
-}
-
-.media-overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(5, 5, 8, 0.28);
-  opacity: 0;
-  transition: opacity 0.35s var(--ease-out);
-  backdrop-filter: blur(1.5px);
-}
-
-.media-glyph {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  color: #fff;
-  transform: scale(0.82);
-  transition: transform 0.3s var(--ease-spring), background 0.3s;
-
-  &.video {
-    background: linear-gradient(135deg, #ff4d2e, #ff9a3d);
-    border: none;
-    box-shadow: 0 8px 26px rgba(255, 77, 46, 0.4);
-  }
-}
-
-.book-cell:hover .media-overlay {
-  opacity: 1;
-
-  .media-glyph {
-    transform: scale(1);
-  }
-}
-
 .book-ext {
   position: absolute;
   right: 8px;
@@ -735,6 +903,23 @@ const plateStyles = [
   color: rgba(255, 255, 255, 0.9);
   font-size: 9px;
   letter-spacing: 0.12em;
+  backdrop-filter: blur(6px);
+}
+
+.book-folder {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: 55%;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   backdrop-filter: blur(6px);
 }
 
@@ -820,6 +1005,35 @@ const plateStyles = [
   .plate-grid,
   .book-grid {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  }
+}
+
+/* 手机宽度：卡片网格流式列数（≥3 列，随宽度自动算），卡片变小、默认隐藏名字 */
+@media (max-width: 480px) {
+  .book-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 14px 8px;
+  }
+
+  .book-name {
+    display: none;
+  }
+}
+
+/* ===== 触屏（hover:none）：删除无 hover 语义的悬浮/位移动画 =====
+   同 Home：触屏无悬停态，位移只会在按下瞬间抖动、长按时钉住卡片，
+   并与滚动恢复锚点重叠。颜色反馈、:active、骨架屏保留。 */
+@media (hover: none) {
+  .plate:hover,
+  .book-cell:hover .book-cover,
+  .plate:hover .plate-art,
+  .plate:hover .plate-ico {
+    transform: none;
+  }
+
+  .back-btn:hover,
+  .empty-cta:hover {
+    transform: none;
   }
 }
 </style>

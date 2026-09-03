@@ -1,28 +1,41 @@
 <script setup>
-import { useBooks } from "../store/loadBooks";
 import MobiReading from "./MobiReading.vue";
+import { flushProgress, setProgress } from "../utils/progress";
 
-const booksStore = useBooks();
 const containerRef = ref(null);
 const route = useRoute();
 const show = ref(false);
-provide(
-  "index",
-  ref({
-    nowIndex: 0,
-    total: 0,
-  })
-);
+const indexState = ref({
+  nowIndex: 0,
+  total: 0,
+});
+provide("index", indexState);
+const progressReady = ref(false);
+provide("progressReady", progressReady);
+const bookId = ref(null);
+provide("bookId", bookId);
 provide("toces", ref([]));
 provide("show", show);
 const bookInfo = ref(null);
 onBeforeMount(() => {
-  const book = booksStore.getBook(route.params.id);
-  bookInfo.value = book;
-  console.log("path", book);
+  bookId.value = route.params.id;
+  const q = route.query;
+  const path = String(q.path || "");
+  const name = String(q.name || "");
+  bookInfo.value = {
+    title: name.replace(/\.[^.]+$/, "") || path.split(/[\\/]/).filter(Boolean).pop() || "",
+    path,
+    ext: String(q.ext || ""),
+  };
 });
 
 provide("bookInfo", bookInfo);
+watch(
+  () => indexState.value.nowIndex,
+  (page) => {
+    if (progressReady.value) setProgress(bookId.value, page);
+  }
+);
 const boxShow = (e) => {
   const x = e.clientX;
   const y = e.clientY;
@@ -55,20 +68,25 @@ const moveMethods = {
       },
     };
   },
+  slider: (n) => containerRef.value?.slider?.(n),
 };
 provide("moveMethods", moveMethods);
+onUnmounted(() => {
+  void flushProgress();
+});
 </script>
 
 <template>
   <div class="reader-root">
+    <div class="reader-drag" data-tauri-drag-region></div>
     <TopDrawer />
     <div class="reader-stage" @click="boxShow">
       <ComicReading
-        v-if="bookInfo.ext.endsWith('cbz') || bookInfo.ext.endsWith('zip')"
+        v-if="bookInfo && (bookInfo.ext.endsWith('cbz') || bookInfo.ext.endsWith('zip'))"
         ref="containerRef"
       />
-      <EpubReading v-else-if="bookInfo.ext.endsWith('epub')" ref="containerRef" />
-      <MobiReading v-else-if="bookInfo.ext.endsWith('mobi')" ref="containerRef" />
+      <EpubReading v-else-if="bookInfo && bookInfo.ext.endsWith('epub')" ref="containerRef" />
+      <MobiReading v-else-if="bookInfo && bookInfo.ext.endsWith('mobi')" ref="containerRef" />
     </div>
     <BottomDrawer />
   </div>
@@ -85,5 +103,14 @@ provide("moveMethods", moveMethods);
 
 .reader-stage {
   display: contents;
+}
+
+.reader-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 16px;
+  z-index: 299;
 }
 </style>

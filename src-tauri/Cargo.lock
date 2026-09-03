@@ -3060,9 +3060,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
- "tauri-plugin-android-fs",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-opener",
@@ -3938,22 +3938,6 @@ dependencies = [
  "tauri-utils",
  "toml 0.9.7",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-android-fs"
-version = "16.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d8b171df1f68e7522429c5bdbef897610e15ddcab7f90b2f3c59dbc5750f111"
-dependencies = [
- "base64 0.22.1",
- "percent-encoding",
- "serde",
- "serde_json",
- "tauri",
- "tauri-plugin",
- "tauri-plugin-fs",
- "thiserror 2.0.16",
 ]
 
 [[package]]

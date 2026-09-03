@@ -3,25 +3,39 @@ import { invoke } from "@tauri-apps/api/core";
 import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
 import { useUI } from "../store/ui";
+import { useSettings } from "../store/settings";
 import {
   covers,
   coverFailed,
   dirCache,
   getDrivesCache,
   setDrivesCache,
-  enqueueCover,
+  scrollMemory,
   canonKey,
   prefetchCovers,
-  stopPrefetch,
 } from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
+import { createScrollRestorer } from "../utils/scrollAnchor";
 import { extOf, isVideo, isImage } from "../utils/media";
+import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { useItemActions } from "../utils/itemActions";
+import { useCellLongPress } from "../utils/longPress";
+import { useLazyCovers } from "../utils/lazyCovers";
+import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import Icon from "./Icon.vue";
+import MediaCover from "./MediaCover.vue";
 
 const router = useRouter();
 const route = useRoute();
 const booksStore = useBooks();
 const ui = useUI();
+const settings = useSettings();
+const { copyPath, revealPath, requestDelete, editTags } = useItemActions({
+  onDeleted: async () => {
+    if (current.value) await loadDir(current.value.key);
+    else await loadRoot();
+  },
+});
 
 const COMIC_EXTS = ["cbz", "zip", "epub", "mobi"];
 
@@ -31,6 +45,14 @@ const current = ref(null); // { name, key }，null = 根视图
 const history = ref([]);
 const entries = ref([]);
 const loading = ref(false);
+const entryMap = new Map();
+const rebuildEntryMap = () => {
+  entryMap.clear();
+  for (const e of entries.value) entryMap.set(e.key, e);
+};
+watch(entries, rebuildEntryMap, { immediate: true });
+// 目录列表只在首次载入时播入场动画，之后进入/切换目录直接出现
+watch(entries, () => markEntrancePlayed("browse.files"));
 
 // 视图模式：auto = 收藏夹用网格，否则列表
 const view = ref("auto");
@@ -45,11 +67,28 @@ const effectiveView = computed(() =>
   view.value === "auto" ? (isFavorite.value ? "grid" : "list") : view.value
 );
 
+// 条目是否位于某个收藏根之下：只有这类路径才是（或将成为）库内条目，
+// 打标签才有意义；浏览未收藏目录时菜单里不显示「编辑标签」。
+const isInsideFavorite = (path) => {
+  const sep = booksStore.platform === "windows" ? "\\" : "/";
+  const key = cacheKey(path);
+  return booksStore.favoriteDirs.some((d) => {
+    const rootKey = cacheKey(d.path);
+    return key === rootKey || key.startsWith(rootKey.endsWith(sep) ? rootKey : rootKey + sep);
+  });
+};
+
 // Android：先通过“所有文件访问权限”门，再以路径方式浏览
 const allFilesOk = ref(false);
 const rootKey = ref(null);
 
 const cacheKey = (key) => (booksStore.platform === "windows" ? key.toLowerCase() : key);
+
+// 滚动位置缓存：按目录规范化 key 记忆上次位置，删除重载/缓存失效重建列表时
+// 恢复，避免删除文件后列表被弹回顶部、要重新翻很久。根视图用特殊 key。
+const ROOT_SCROLL_KEY = "\u0000root";
+const currentScrollKey = () =>
+  current.value ? cacheKey(current.value.key) : ROOT_SCROLL_KEY;
 const joinPath = (base, name) => {
   const sep = booksStore.platform === "windows" ? "\\" : "/";
   return base.endsWith(sep) ? base + name : base + sep + name;
@@ -66,6 +105,7 @@ const loadRoot = async () => {
   if (cached) {
     entries.value = cached;
     observeCovers();
+    restoreScroll();
     return;
   }
   loading.value = true;
@@ -80,6 +120,7 @@ const loadRoot = async () => {
   } finally {
     loading.value = false;
     observeCovers();
+    restoreScroll();
   }
 };
 
@@ -88,6 +129,7 @@ const loadDir = async (key) => {
   if (dirCache.has(ck)) {
     entries.value = dirCache.get(ck);
     observeCovers();
+    restoreScroll();
     return;
   }
   loading.value = true;
@@ -99,7 +141,7 @@ const loadDir = async (key) => {
       if (e.name.startsWith(".")) continue;
       if (e.isDirectory) {
         dirs.push({ name: e.name, key: joinPath(key, e.name), isDir: true });
-      } else if (isComicFile(e.name) || isVideo(e.name)) {
+      } else if (isComicFile(e.name) || isVideo(e.name) || isImage(e.name)) {
         const entryKey = canonKey(joinPath(key, e.name));
         const entry = {
           name: e.name,
@@ -124,10 +166,12 @@ const loadDir = async (key) => {
   } finally {
     loading.value = false;
     observeCovers();
+    restoreScroll();
   }
 };
 
 const enter = async (entry) => {
+  browserScroll.checkpoint();
   history.value.push({ name: entry.name, key: entry.key });
   current.value = { name: entry.name, key: entry.key };
   view.value = "auto";
@@ -135,6 +179,7 @@ const enter = async (entry) => {
 };
 
 const enterRoot = async () => {
+  browserScroll.checkpoint();
   if (isAndroid.value) {
     if (!allFilesOk.value || !rootKey.value) return;
     history.value = [{ name: "内部存储", key: rootKey.value }];
@@ -151,7 +196,7 @@ const enterRoot = async () => {
 watch(
   () => ui.navReset,
   () => {
-    savedScroll = 0;
+    browserScroll.clear({ stateKey: ROOT_SCROLL_KEY, anchorKey: "browser:" + ROOT_SCROLL_KEY });
     enterRoot();
     nextTick(() => {
       if (scrollRef.value) scrollRef.value.scrollTop = 0;
@@ -161,6 +206,7 @@ watch(
 
 const goUp = async () => {
   if (!history.value.length) return;
+  browserScroll.checkpoint();
   history.value.pop();
   if (history.value.length) {
     const parent = history.value[history.value.length - 1];
@@ -182,6 +228,7 @@ const crumbs = computed(() => {
 });
 
 const jumpCrumb = async (c) => {
+  browserScroll.checkpoint();
   if (!c.key) {
     history.value = [];
     current.value = null;
@@ -200,56 +247,43 @@ const jumpCrumb = async (c) => {
 };
 
 const scrollRef = ref(null);
-let savedScroll = 0;
-
-const onScroll = () => {
-  if (scrollRef.value) savedScroll = scrollRef.value.scrollTop;
-};
+const browserScroll = createScrollRestorer({
+  element: () => scrollRef.value,
+  stateKey: currentScrollKey,
+  anchorKey: () => "browser:" + currentScrollKey(),
+  memory: scrollMemory,
+  anchorSelector: ".entry[data-key], .grid-card[data-key]",
+});
+const onScroll = () => browserScroll.capture();
+const restoreScroll = () => browserScroll.restoreAfterRender();
 
 watch(scrollRef, (el, old) => {
   if (old) old.removeEventListener("scroll", onScroll);
   if (el) el.addEventListener("scroll", onScroll, { passive: true });
 });
 
-onActivated(() => {
-  nextTick(() => {
-    if (scrollRef.value && savedScroll) scrollRef.value.scrollTop = savedScroll;
-  });
+onActivated(async () => {
+  await restoreScroll();
   observeCovers();
 });
 
 onDeactivated(() => {
-  coverObserver?.disconnect();
-  stopPrefetch();
+  closeContextMenu();
+  browserScroll.checkpoint();
+  lazyCovers.reset();
 });
 
-let coverObserver = null;
-const observedCovers = new Set();
-
-const observeCovers = async () => {
-  await nextTick();
-  coverObserver?.disconnect();
-  observedCovers.clear();
-  const nodes = document.querySelectorAll(".browser .grid-card, .browser .entry");
-  coverObserver = new IntersectionObserver(
-    (list) => {
-      for (const item of list) {
-        if (!item.isIntersecting) continue;
-        const key = item.target.dataset.key;
-        if (item.target.dataset.kind === "video") continue;
-        coverObserver?.unobserve(item.target);
-        if (observedCovers.has(key)) continue;
-        observedCovers.add(key);
-        enqueueCover(key, true);
-      }
-    },
-    { rootMargin: "300px" }
-  );
-  for (const node of nodes) coverObserver.observe(node);
-  prefetchCovers(
-    entries.value.filter((e) => !e.isDir && e.kind !== "video").map((e) => e.key)
-  );
-};
+const lazyCovers = useLazyCovers({
+  selector: ".browser .grid-card, .browser .entry",
+  // 文件夹也提取封面（group 逻辑：优先第一个子文件夹封面，退回首图/首视频帧）
+  kindOf: (key, kind) => (kind === "dir" ? "group" : kind),
+  // 列表视图的行不加媒体封面，只对网格卡片提取。
+  skip: (key, kind, node) => (kind === "video" || kind === "image") && !node.matches(".grid-card"),
+  prefetch: () => {
+    prefetchCovers(entries.value.filter((e) => !e.isDir).map((e) => ({ key: e.key, kind: e.kind })));
+  },
+});
+const observeCovers = () => lazyCovers.observe();
 
 watch(entries, () => {
   observeCovers();
@@ -294,6 +328,7 @@ const entryIcon = (entry) => {
 };
 
 const openBook = async (entry) => {
+  browserScroll.checkpoint();
   if (entry.kind === "video") {
     await openVideo(entry);
     return;
@@ -304,11 +339,10 @@ const openBook = async (entry) => {
   }
   const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
   const id = await calculateHash(key);
-  if (!booksStore.getBook(id)) {
-    const title = entry.name.slice(0, entry.name.lastIndexOf("."));
-    await booksStore.addBook({ [id]: { title, path: key, ext: entry.ext } });
-  }
-  router.push({ path: `/reading/${id}`, query: { from: current.value.key } });
+  router.push({
+    path: `/reading/${id}`,
+    query: { path: key, name: entry.name, ext: entry.ext, from: current.value.key },
+  });
 };
 
 const setupAndroid = async () => {
@@ -350,10 +384,89 @@ const openPath = async (q) => {
   await loadDir(q);
 };
 
+const openEntryMenu = (entry, x, y) => {
+  const isAndroid = booksStore.platform === "android";
+  openContextMenu({
+    x,
+    y,
+    items: [
+      {
+        id: "open",
+        label: entry.isDir ? "打开文件夹" : "打开",
+        icon: entry.isDir ? "folder" : entryIcon(entry),
+        onSelect: () => {
+          closeContextMenu();
+          if (entry.isDir) enter(entry);
+          else openBook(entry);
+        },
+      },
+      {
+        id: "copy",
+        label: "复制路径",
+        icon: "book-copy",
+        onSelect: () => copyPath(entry),
+      },
+      {
+        id: "tags",
+        label: "编辑标签",
+        icon: "tag",
+        hidden: !isInsideFavorite(entry.key),
+        onSelect: () => editTags(entry),
+      },
+      {
+        id: "reveal",
+        label: "在文件管理器中显示",
+        icon: "folder-open",
+        hidden: isAndroid,
+        onSelect: () => revealPath(entry),
+      },
+      {
+        id: "delete",
+        label: "删除",
+        icon: "trash",
+        danger: true,
+        onSelect: () => requestDelete(entry, entry.isDir),
+      },
+    ],
+  });
+};
+
+const onBrowserContextMenu = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const cell = e.target?.closest?.(".entry, .grid-card");
+  const key = cell?.dataset?.key;
+  const hit = key ? entryMap.get(key) : null;
+  if (hit) openEntryMenu(hit, e.clientX, e.clientY);
+  else openGenericMenu(e.clientX, e.clientY);
+};
+
+const longPress = useCellLongPress({
+  selector: ".entry, .grid-card",
+  resolveHit: (cell) => entryMap.get(cell.dataset.key) || null,
+  onHit: (hit, x, y) => openEntryMenu(hit, x, y),
+  onEmpty: (x, y) => openGenericMenu(x, y),
+});
+
 onUnmounted(() => {
   scrollRef.value?.removeEventListener("scroll", onScroll);
-  coverObserver?.disconnect();
-  stopPrefetch();
+  lazyCovers.reset();
+});
+
+// 系统返回键接管：本组件处于激活状态且内部目录栈有层级时，
+// 返回键先逐级回退目录（由 main.js 的 __handleAndroidBack 优先调用）。
+onActivated(() => {
+  window.__dirBack = () => {
+    if (history.value.length) {
+      goUp();
+      return true;
+    }
+    return false;
+  };
+});
+
+onDeactivated(() => {
+  window.__dirBack = undefined;
 });
 
 onMounted(async () => {
@@ -373,13 +486,24 @@ onMounted(async () => {
 watch(
   () => route.query.path,
   (q) => {
+    // 仅在本页面激活时响应：/video、/media 等路由也带 path 查询参数，
+    // 离开 /browse 时 query.path 的变更不应再触发目录读取（否则会拿视频
+    // 文件路径当目录 readDir，报“目录名称无效”）。
+    if (route.path !== "/browse") return;
     if (typeof q === "string" && q) openPath(q);
   }
 );
 </script>
 
 <template>
-  <div class="browser">
+  <div
+    class="browser"
+    @contextmenu="onBrowserContextMenu"
+    @touchstart="longPress.onTouchStart"
+    @touchmove="longPress.onTouchMove"
+    @touchend="longPress.onTouchEnd"
+    @touchcancel="longPress.onTouchCancel"
+  >
     <!-- 面包屑工具栏 -->
     <div class="browser-bar glass">
       <button class="bar-btn" :disabled="!current" @click="goUp" title="上一级">
@@ -408,7 +532,7 @@ watch(
           @click="toggleFavorite"
           :title="isFavorite ? '取消收藏' : '收藏此文件夹'"
         >
-          <Icon :id="isFavorite ? 'star' : 'star'" :size="18" :stroke-width="isFavorite ? 2.2 : 1.8" />
+          <Icon :id="isFavorite ? 'star-filled' : 'star'" :size="18" :stroke-width="isFavorite ? 2.2 : 1.8" />
         </button>
       </div>
     </div>
@@ -433,18 +557,19 @@ watch(
         <li
           v-for="(entry, i) in entries"
           :key="entry.key"
-          class="entry reveal"
-          :style="{ animationDelay: `${Math.min(i * 24, 400)}ms` }"
+          class="entry"
+          :class="{ reveal: entranceActive('browse.files') }"
+          :style="entranceActive('browse.files') ? { animationDelay: `${Math.min(i * 24, 400)}ms` } : undefined"
           :data-key="entry.key"
           :data-kind="entry.isDir ? 'dir' : entry.kind"
-          @click="entry.isDir ? enter(entry) : openBook(entry)"
+          @click="longPress.onCellClick(() => entry.isDir ? enter(entry) : openBook(entry))"
         >
           <span class="entry-ico" :class="{ dir: entry.isDir }">
             <Icon :id="entryIcon(entry)" :size="19" />
           </span>
-          <img v-if="!entry.isDir && covers[entry.key]" :src="covers[entry.key]" class="entry-cover" alt="" loading="lazy" decoding="async" />
+          <img v-if="covers[entry.key]" :src="covers[entry.key]" class="entry-cover" alt="" loading="lazy" decoding="async" />
           <span class="entry-name">{{ entry.name }}</span>
-          <span v-if="!entry.isDir" class="entry-ext mono">{{ entry.ext.toUpperCase() }}</span>
+          <span v-if="!entry.isDir && settings.showSource" class="entry-ext mono">{{ entry.ext.toUpperCase() }}</span>
           <Icon id="chevron-right" :size="15" class="entry-arrow" />
         </li>
       </ul>
@@ -453,18 +578,29 @@ watch(
         <li
           v-for="(entry, i) in entries"
           :key="entry.key"
-          class="grid-card reveal"
-          :style="{ animationDelay: `${Math.min(i * 40, 500)}ms` }"
+          class="grid-card"
+          :class="{ reveal: entranceActive('browse.files') }"
+          :style="entranceActive('browse.files') ? { animationDelay: `${Math.min(i * 40, 500)}ms` } : undefined"
           :data-key="entry.key"
           :data-kind="entry.isDir ? 'dir' : entry.kind"
-          @click="entry.isDir ? enter(entry) : openBook(entry)"
+          @click="longPress.onCellClick(() => entry.isDir ? enter(entry) : openBook(entry))"
         >
-          <div class="grid-cover-wrap">
-            <img v-if="!entry.isDir && covers[entry.key]" :src="covers[entry.key]" class="grid-cover" alt="" loading="lazy" decoding="async" />
+          <MediaCover
+            v-if="!entry.isDir && entry.kind !== 'comic'"
+            :kind="entry.kind"
+            :ext="entry.ext"
+            :index="i"
+            :src="covers[entry.key]"
+            :meta="settings.showSource"
+            :data-key="entry.key"
+            :data-kind="entry.kind"
+          />
+          <div v-else class="grid-cover-wrap">
+            <img v-if="covers[entry.key]" :src="covers[entry.key]" class="grid-cover" alt="" loading="lazy" decoding="async" />
             <span v-else class="grid-icon" :class="{ dir: entry.isDir }">
               <Icon :id="entryIcon(entry)" :size="38" :stroke-width="1.75" />
             </span>
-            <span v-if="!entry.isDir" class="grid-ext mono">{{ entry.ext.toUpperCase() }}</span>
+            <span v-if="!entry.isDir && settings.showSource" class="grid-ext mono">{{ entry.ext.toUpperCase() }}</span>
           </div>
           <div class="grid-name"><n-ellipsis :tooltip="false">{{ entry.name }}</n-ellipsis></div>
         </li>
@@ -472,7 +608,7 @@ watch(
 
       <div v-if="!loading && !entries.length" class="browser-hint empty">
         <Icon id="folder-open" :size="34" />
-        <span>这个文件夹里没有漫画或视频</span>
+        <span>这个文件夹里没有漫画、视频或图片</span>
       </div>
     </template>
   </div>
@@ -718,11 +854,14 @@ watch(
   border-radius: 10px;
   overflow: hidden;
   background: var(--bg-2);
-  border: 1px solid var(--line);
   box-shadow: var(--shadow-1);
   display: grid;
   place-items: center;
   transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
+}
+
+.grid-card[data-kind="comic"] .grid-cover-wrap {
+  border: 1px solid var(--line);
 }
 
 .grid-card:hover .grid-cover-wrap {
@@ -846,6 +985,34 @@ watch(
       color: var(--accent);
       border-color: var(--accent);
     }
+  }
+}
+
+/* 纯触屏无 hover：行箭头常显（原 .entry:hover 才显示） */
+@media (hover: none) {
+  .entry .entry-arrow {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* 触屏无悬停语义：禁用悬浮/位移动画（位移会在按下瞬间抖动并与
+     滚动恢复锚点重叠），保留颜色/背景反馈、:active 与加载指示 */
+  .entry:hover,
+  .grid-card:hover .grid-cover-wrap,
+  .perm-btn.primary:hover {
+    transform: none;
+  }
+}
+
+/* 手机宽度：卡片网格流式列数（≥3 列，随宽度自动算），卡片变小、默认隐藏名字 */
+@media (max-width: 480px) {
+  .browser-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 14px 8px;
+  }
+
+  .grid-name {
+    display: none;
   }
 }
 </style>

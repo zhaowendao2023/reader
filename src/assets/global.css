@@ -1,6 +1,6 @@
 /* ============================================================
    朝闻道 · 阅览室 — Design System
-   编辑式画廊美学：暖纸/炭黑底色 × 朱砂点缀
+   编辑式画廊美学：中性亮面/炭黑底色 × 朱砂点缀
    ============================================================ */
 
 /* ---------- 字体 ---------- */
@@ -13,25 +13,26 @@
 /* ---------- 主题令牌 ---------- */
 :root,
 .theme-light {
-  --bg-0: #f2efe8;
-  --bg-1: #faf8f3;
-  --bg-2: #ffffff;
-  --bg-3: #ece8df;
-  --panel: rgba(255, 255, 255, 0.72);
-  --panel-solid: #fdfcf9;
-  --line: rgba(24, 21, 17, 0.1);
-  --line-strong: rgba(24, 21, 17, 0.22);
-  --text-1: #1b1814;
-  --text-2: rgba(27, 24, 20, 0.62);
-  --text-3: rgba(27, 24, 20, 0.4);
-  --accent: #e6391f;
-  --accent-2: #7a9e00;
-  --accent-soft: rgba(230, 57, 31, 0.1);
-  --accent-grad: linear-gradient(120deg, #e6391f 0%, #ff7a45 100%);
-  --shadow-1: 0 1px 2px rgba(27, 24, 20, 0.06), 0 8px 24px rgba(27, 24, 20, 0.08);
-  --shadow-2: 0 2px 6px rgba(27, 24, 20, 0.08), 0 24px 60px rgba(27, 24, 20, 0.16);
-  --glow: 0 0 0 1px rgba(230, 57, 31, 0.35), 0 10px 44px rgba(230, 57, 31, 0.22);
-  --grain-opacity: 0.045;
+  --bg-0: #f4f6f8;
+  --bg-1: #f9fafb;
+  --bg-2: #fcfdfe;
+  --bg-3: #edf0f4;
+  --panel: rgba(252, 253, 254, 0.84);
+  --panel-solid: #fcfdfe;
+  --line: rgba(30, 39, 52, 0.1);
+  --line-strong: rgba(30, 39, 52, 0.18);
+  --text-1: #1a1f27;
+  --text-2: rgba(26, 31, 39, 0.62);
+  --text-3: rgba(26, 31, 39, 0.42);
+  --accent: #e85a43;
+  --accent-2: #5a80d6;
+  --accent-soft: rgba(232, 90, 67, 0.08);
+  --accent-grad: linear-gradient(120deg, #e85a43 0%, #f29b6a 100%);
+  --shadow-1: 0 1px 2px rgba(30, 39, 52, 0.04), 0 8px 24px rgba(30, 39, 52, 0.06);
+  --shadow-2: 0 2px 6px rgba(30, 39, 52, 0.06), 0 24px 60px rgba(30, 39, 52, 0.12);
+  --glow: 0 0 0 1px rgba(232, 90, 67, 0.28), 0 10px 36px rgba(232, 90, 67, 0.16);
+  --grain-opacity: 0.02;
+  --vignette-opacity: 0.08;
 }
 
 .theme-dark {
@@ -53,7 +54,8 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.45);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5), 0 32px 80px rgba(0, 0, 0, 0.6);
   --glow: 0 0 0 1px rgba(255, 77, 46, 0.4), 0 12px 48px rgba(255, 77, 46, 0.22);
-  --grain-opacity: 0.07;
+  --grain-opacity: 0.1;
+  --vignette-opacity: 0.42;
 }
 
 /* ---------- 基础 ---------- */
@@ -76,10 +78,13 @@ body {
   background: var(--bg-0);
   color: var(--text-1);
   overflow: hidden;
-  transition: background-color 0.5s var(--ease-out), color 0.5s var(--ease-out);
+  transition: background-color 0.3s var(--ease-out), color 0.3s var(--ease-out);
 }
 
-/* 编辑纹理：全局颗粒 + 暗角 */
+/* 编辑纹理：全局颗粒 + 暗角
+   注意：不要给颗粒层加 mix-blend-mode。overlay 混合会让浏览器在每次底层有
+   动画时都对整屏逐帧重算混合，WebView2 下侧栏伸缩/主题切换会严重掉帧。
+   噪点层本身是静态贴图，纯 alpha 合成即可缓存复用，观感几乎不变。 */
 body::before {
   content: "";
   position: fixed;
@@ -88,7 +93,6 @@ body::before {
   pointer-events: none;
   opacity: var(--grain-opacity);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: overlay;
 }
 
 body::after {
@@ -98,7 +102,7 @@ body::after {
   z-index: 9998;
   pointer-events: none;
   background: radial-gradient(120% 90% at 50% 0%, transparent 62%, rgba(0, 0, 0, 0.14) 100%);
-  opacity: 0.42;
+  opacity: var(--vignette-opacity);
 }
 
 ::selection {
@@ -255,13 +259,21 @@ body::after {
   }
 }
 
+/* 触屏（hover:none）：入场位移动画仅对指针设备有意义，且其位移会与
+   滚动恢复锚点校正窗口重叠；触屏直接停播（元素保持最终可见态）。 */
+@media (hover: none) {
+  .reveal {
+    animation: none;
+  }
+}
+
 /* ---------- 兼容变量（旧组件引用） ---------- */
 :root,
 .theme-light {
-  --color: #1b1814;
-  --bgc: #f2efe8;
-  --a-color: #e6391f;
-  --xy-color: rgba(24, 21, 17, 0.2);
+  --color: #1a1f27;
+  --bgc: #f5f6f8;
+  --a-color: #e85a43;
+  --xy-color: rgba(30, 39, 52, 0.18);
   --text-bgc: #ffffff;
   --icon-fill: currentColor;
   --p-font-size: 16px;

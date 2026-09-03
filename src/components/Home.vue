@@ -1,121 +1,271 @@
 <script setup>
-import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
+import { useSettings } from "../store/settings";
 import { useUI } from "../store/ui";
-import { covers, canonKey, enqueueCover, prefetchCovers, stopPrefetch } from "../store/browserCache";
+import {
+  covers,
+  canonKey,
+  scrollMemory,
+  prefetchCovers,
+  libraryVersion,
+} from "../store/browserCache";
 import { calculateHash } from "../utils/utils";
-import { MEDIA_EXTS, extOf, isVideo } from "../utils/media";
+import { isVideo } from "../utils/media";
+import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
+import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
+import { createScrollRestorer } from "../utils/scrollAnchor";
+import { invoke } from "@tauri-apps/api/core";
+import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { useItemActions } from "../utils/itemActions";
+import { useCellLongPress } from "../utils/longPress";
+import { useLazyCovers } from "../utils/lazyCovers";
 import Icon from "./Icon.vue";
+import MediaCover from "./MediaCover.vue";
 
 defineOptions({ name: "Home" });
 
 const booksStore = useBooks();
+const settings = useSettings();
 const ui = useUI();
 const router = useRouter();
 
 const favoriteDirs = computed(() => booksStore.favoriteDirs);
+const { copyPath, revealPath, requestDelete, editTags } = useItemActions();
 
-// 聚合类型：hub = 双卡片主界面；comics = 全量漫画；media = 视频图包
+// 聚合类型：hub = 双卡片主界面；comics = 全量漫画；media = 影视图集
 const mode = ref("hub");
 const comics = ref([]);
 const media = ref([]);
+const mediaGroups = ref([]);
 const scanning = ref(false);
+const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
+const pageRef = ref(null);
+const homeScrollKey = () => `home:${mode.value}`;
+const homeScroll = createScrollRestorer({
+  element: () => pageRef.value,
+  stateKey: () => mode.value,
+  anchorKey: homeScrollKey,
+  memory: scrollMemory,
+  anchorSelector: ".book-cell[data-key]",
+});
+// 骨架屏/异步扫描会让 scrollHeight 暂时塌缩；快照必须在切换前冻结，不能事后回读。
+const freezeHomeScroll = () => homeScroll.checkpoint();
+const restorePageScroll = (snapshot) => homeScroll.restoreAfterRender({ snapshot });
+// 首次进入时保留少量错峰动画作为视觉反馈，避免让整本书库同时运行动画。
+const ENTRANCE_CARD_LIMIT = 24;
+const shouldReveal = (index, key) => entranceActive(key) && index < ENTRANCE_CARD_LIMIT;
 
-const COMIC_EXTS = ["cbz", "zip", "epub", "mobi"];
-
-const joinPath = (base, name) => {
-  const sep = booksStore.platform === "windows" ? "\\" : "/";
-  return base.endsWith(sep) ? base + name : base + sep + name;
-};
-
-const collectVideoPacks = async (baseDir, favoriteName, target) => {
-  let raw;
-  try {
-    raw = await readDir(baseDir);
-  } catch {
-    return;
-  }
-  for (const e of raw) {
-    if (e.name.startsWith(".")) continue;
-    const full = joinPath(baseDir, e.name);
-    if (e.isDirectory) {
-      await collectVideoPacks(full, favoriteName, target);
-    } else if (e.isFile && isVideo(e.name)) {
-      const key = canonKey(baseDir);
-      let pack = target.get(key);
-      if (!pack) {
-        const name = baseDir.split(/[\\/]/).filter(Boolean).pop() || baseDir;
-        pack = {
-          name,
-          key,
-          path: baseDir,
-          folder: favoriteName,
-          kind: "video-folder",
-          count: 0,
-        };
-        target.set(key, pack);
-      }
-      pack.count++;
-    }
-  }
-};
-
-// 打平所有收藏文件夹：漫画包进全量书架，视频按目录聚成系列，图包单文件进媒体
 const scanAll = async () => {
   const dirs = favoriteDirs.value;
-  scanning.value = true;
   const comicMap = new Map();
-  const mediaMap = new Map();
-  const videoPackMap = new Map();
+  const groups = [];
   const tasks = dirs.map(async (dir) => {
     try {
-      const raw = await readDir(dir.path);
-      await collectVideoPacks(dir.path, dir.name, videoPackMap);
-      for (const e of raw) {
-        if (!e.isFile || e.name.startsWith(".")) continue;
-        const ext = extOf(e.name);
-        const item = {
-          name: e.name,
-          key: canonKey(joinPath(dir.path, e.name)),
-          path: joinPath(dir.path, e.name),
-          ext,
-          folder: dir.name,
-          dir: dir.path,
-          kind: COMIC_EXTS.includes(ext) ? "comic" : isVideo(e.name) ? "video" : "image",
-        };
-        if (COMIC_EXTS.includes(ext)) comicMap.set(item.key, item);
-        else if (MEDIA_EXTS.includes(ext) && !isVideo(e.name)) mediaMap.set(item.key, item);
+      const result = await scanFavoriteTree(dir.path, dir.name);
+      // dirty=false 说明磁盘与 SQLite 索引一致（mtime 未变），无需重复写库
+      if (result.dirty) {
+        const entries = flattenScan(result, dir);
+        await syncFavoriteToDb(dir, entries);
       }
+      for (const book of result.comics) comicMap.set(book.key, book);
+      let items = result.packs;
+      if (!items.length) return;
+      // 收藏根自身直接含媒体文件（pack）→ 展开为「子文件夹 + 直接媒体文件」条目：
+      // 影视图集聚合的是收藏夹内容，而不是收藏夹本身
+      const rootPack = items.length === 1 && items[0].path === dir.path ? items[0] : null;
+      if (rootPack) {
+        const dirs = rootPack.children || [];
+        const files = (rootPack.files || []).map((f) => ({
+          name: f.name,
+          key: canonKey(f.path),
+          path: f.path,
+          dir: rootPack.path,
+          folder: dir.name,
+          kind: isVideo(f.name) ? "video" : "image",
+          ext: f.ext || "",
+          count: 0,
+          videoCount: isVideo(f.name) ? 1 : 0,
+          imageCount: isVideo(f.name) ? 0 : 1,
+          childCount: 0,
+          children: [],
+          files: [],
+        }));
+        items = [...dirs, ...files];
+      }
+      if (!items.length) return;
+      const compact = !!rootPack;
+      groups.push({ path: dir.path, name: dir.name, items, compact });
     } catch (error) {
-      // 单个文件夹读取失败不影响其它收藏夹聚合
+      console.error("scan failed:", dir.path, error);
     }
   });
   await Promise.all(tasks);
-  const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
   comics.value = Array.from(comicMap.values()).sort(byName);
-  media.value = [...videoPackMap.values(), ...mediaMap.values()].sort(byName);
-  scanning.value = false;
+  mediaGroups.value = groups.sort(byName);
+  media.value = groups.flatMap((g) => g.items).sort(byName);
+};
+
+const extraOf = (row) => row.extra || {};
+
+const nodeShape = (row, favName, kind, ext) => ({
+  name: row.name,
+  key: row.pathKey,
+  path: row.pathKey,
+  dir: row.parentPath || row.pathKey,
+  folder: favName,
+  kind,
+  ext,
+  count: extraOf(row).count ?? 0,
+  // 单文件条目（video/image 行）：计数直接定为 1
+  videoCount: kind === "video" ? 1 : extraOf(row).videoCount ?? 0,
+  imageCount: kind === "image" ? 1 : extraOf(row).imageCount ?? 0,
+  childCount: extraOf(row).childCount ?? 0,
+  children: [],
+  files: [],
+});
+
+const kindOfRow = (row) =>
+  row.kind === "group"
+    ? { kind: "group", ext: "group" }
+    : row.mediaType === "video"
+      ? { kind: "video-folder", ext: "video" }
+      : row.mediaType === "image"
+        ? { kind: "image-folder", ext: "image" }
+        : { kind: "media-folder", ext: "media" };
+
+// Rebuild the in-memory view model (comics / media / mediaGroups) from DB rows.
+const applyLibrary = (rows) => {
+  const comicMap = new Map();
+  const groups = [];
+  const favRows = rows.filter((r) => r.kind === "favorite");
+  for (const dir of favoriteDirs.value) {
+    const favKey = canonKey(dir.path);
+    const favRow = favRows.find((r) => r.pathKey === favKey);
+    if (!favRow) continue;
+    if (favRow.mediaType) {
+      // 收藏根自身直接含媒体（pack）：展开为 子目录 + 直接媒体文件 条目，
+      // 与 scanAll 的展开语义一致（聚合内容而非收藏夹本身）
+      const items = rows
+        .filter(
+          (r) =>
+            r.parentPath === favKey &&
+            (r.kind === "pack" || r.kind === "group" || r.kind === "video" || r.kind === "image")
+        )
+        .map((r) => {
+          if (r.kind === "video" || r.kind === "image") {
+            return nodeShape(r, dir.name, r.kind, r.ext || "video");
+          }
+          const k = kindOfRow(r);
+          return nodeShape(r, dir.name, k.kind, k.ext);
+        });
+      if (!items.length) continue;
+      groups.push({ path: dir.path, name: dir.name, items, compact: true });
+      continue;
+    }
+    const items = rows
+      .filter((r) => r.parentPath === favKey && (r.kind === "pack" || r.kind === "group"))
+      .map((r) => {
+        const k = kindOfRow(r);
+        return nodeShape(r, dir.name, k.kind, k.ext);
+      });
+    if (!items.length) continue;
+    groups.push({ path: dir.path, name: dir.name, items, compact: false });
+  }
+  for (const r of rows) {
+    if (r.kind !== "comic" || !r.folder) continue;
+    comicMap.set(r.pathKey, {
+      name: r.name,
+      key: r.pathKey,
+      path: r.pathKey,
+      ext: r.ext || "",
+      kind: "comic",
+      folder: r.folder,
+      dir: r.parentPath || r.pathKey,
+    });
+  }
+  comics.value = Array.from(comicMap.values()).sort(byName);
+  mediaGroups.value = groups.sort(byName);
+  media.value = groups.flatMap((g) => g.items).sort(byName);
+};
+
+// Startup: read the library from SQLite. Only scan + sync when the DB is
+// empty or a favorite is not in it yet (e.g. right after adding one).
+const loadLibrary = async () => {
+  const restorePoint = freezeHomeScroll();
+  scanning.value = true;
+  try {
+    const [rows, meta] = await Promise.all([invoke("list_items"), invoke("library_meta")]);
+    // Empty DB, or a DB that only has the legacy import (never scanned yet):
+    // do a full scan + sync. Otherwise restore straight from SQLite.
+    if (!rows.length || !meta.synced) {
+      await scanAll();
+    } else {
+      applyLibrary(rows);
+      const favRows = rows.filter((r) => r.kind === "favorite");
+      const stale = favoriteDirs.value.filter((d) => {
+        const row = favRows.find((r) => r.pathKey === canonKey(d.path));
+        // 收藏夹行不存在，或从未被扫描过（created_at == updated_at，比如刚
+        // add_favorite 只建了行、还没扫内容）→ 需要补扫。
+        return !row || row.updatedAt === row.createdAt;
+      });
+      if (stale.length) {
+        // 只补扫新增的收藏夹，不要全库重扫：其余收藏夹 mtime 未变时
+        // scanFavoriteTree 直接走 DB 快路径，不做深层 readDir。
+        for (const dir of stale) {
+          try {
+            const result = await scanFavoriteTree(dir.path, dir.name);
+            if (result.dirty) {
+              const entries = flattenScan(result, dir);
+              await syncFavoriteToDb(dir, entries);
+            }
+          } catch (error) {
+            console.error("scan failed:", dir.path, error);
+          }
+        }
+        const freshRows = await invoke("list_items");
+        applyLibrary(freshRows);
+      }
+    }
+  } catch (error) {
+    console.error("load library failed:", error);
+    await scanAll();
+  } finally {
+    scanning.value = false;
+  }
   observeCovers();
+  await restorePageScroll(restorePoint);
 };
 
 watch(
   () => favoriteDirs.value.map((d) => d.path).join("\u0000"),
-  () => scanAll(),
+  () => loadLibrary(),
   { immediate: true }
+);
+
+let lastLibraryVersion = libraryVersion.value;
+watch(
+  () => libraryVersion.value,
+  (v) => {
+    if (v === lastLibraryVersion) return;
+    lastLibraryVersion = v;
+    loadLibrary();
+  }
 );
 
 const enter = (kind) => {
   mode.value = kind;
-  savedScroll = 0;
-  if (kind !== "comics") stopPrefetch();
+  // 进入新模式从顶部开始，并清掉该模式此前可能残留的快照。
+  homeScroll.clear();
+  // 聚合列表只在首次进入该模式时播入场动画，之后切换/返回直接出现
+  markEntrancePlayed("home." + kind);
+  // observeCovers 内部会 unobserveAll + 重启对应模式的 prefetch，无需手动 reset
   nextTick(() => observeCovers());
 };
 
 const backToHub = () => {
   mode.value = "hub";
-  savedScroll = 0;
-  coverObserver?.disconnect();
-  stopPrefetch();
+  homeScroll.clear();
+  lazyCovers.reset();
 };
 
 // 侧边栏点击「主界面」：无论当前在漫画/视频聚合页，直接回到双卡片
@@ -123,9 +273,8 @@ watch(
   () => ui.navReset,
   () => {
     mode.value = "hub";
-    savedScroll = 0;
-    coverObserver?.disconnect();
-    stopPrefetch();
+    homeScroll.clear();
+    lazyCovers.reset();
     nextTick(() => {
       if (pageRef.value) pageRef.value.scrollTop = 0;
     });
@@ -133,13 +282,10 @@ watch(
 );
 
 const openBook = async (book) => {
+  freezeHomeScroll();
   const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
   const id = await calculateHash(key);
-  if (!booksStore.getBook(id)) {
-    const title = book.name.slice(0, book.name.lastIndexOf("."));
-    await booksStore.addBook({ [id]: { title, path: key, ext: book.ext } });
-  }
-  router.push(`/reading/${id}`);
+  router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext } });
 };
 
 const openVideo = async (item) => {
@@ -151,96 +297,174 @@ const openVideo = async (item) => {
   });
 };
 
-const openVideoFolder = async (item) => {
+const openImagePack = async (item) => {
   const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
   const id = await calculateHash(key);
+  const p = item.path || item.key;
   router.push({
-    path: `/video/${id}`,
-    query: { path: item.path || item.key, name: item.name, playlist: "1" },
+    path: `/media/${id}`,
+    query:
+      item.kind === "image"
+        ? { path: p, name: item.name } // 单张图片：直接展示
+        : { dir: p, path: p, name: item.name }, // 图包目录：列出并定位
   });
 };
 
-const openImage = async (item) => {
+const openMediaPack = async (item) => {
   const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
   const id = await calculateHash(key);
   router.push({
-    path: `/media/${id}`,
-    query: { dir: item.dir || item.path, path: item.path || item.key, name: item.name },
+    path: `/media-pack/${id}`,
+    query: { dir: item.path || item.key, name: item.name },
   });
+};
+
+const openMediaGroup = (group) => {
+  freezeHomeScroll();
+  return openMediaPack({ key: canonKey(group.path), path: group.path, name: group.name });
 };
 
 const openMedia = (item) => {
-  if (item.kind === "video-folder") openVideoFolder(item);
-  else if (isVideo(item.ext)) openVideo(item);
-  else openImage(item);
+  freezeHomeScroll();
+  // 聚合内容里的条目可能是子文件夹（pack/group）、单文件视频或单张图片
+  if (item.kind === "video") return openVideo(item);
+  if (item.kind === "image") return openImagePack(item);
+  return openMediaPack(item);
 };
 
 /* ===== 封面懒加载（与书架共用缓存队列） ===== */
-let coverObserver = null;
-const observedCovers = new Set();
+/* ===== 右键/长按自定义菜单 ===== */
+const cardMap = new Map();
+const rebuildCardMap = () => {
+  cardMap.clear();
+  for (const book of comics.value) cardMap.set(book.key, { item: book, kind: "comic" });
+  for (const m of media.value) cardMap.set(m.key, { item: m, kind: "media" });
+};
+watch([comics, media], rebuildCardMap);
 
-const observeCovers = async () => {
-  await nextTick();
-  coverObserver?.disconnect();
-  observedCovers.clear();
-  const nodes = document.querySelectorAll(".home-page .book-cover");
-  coverObserver = new IntersectionObserver(
-    (list) => {
-      for (const item of list) {
-        if (!item.isIntersecting) continue;
-        const key = item.target.dataset.key;
-        const kind = item.target.dataset.kind;
-        if (kind === "video" || kind === "video-folder" || kind === "image") continue;
-        coverObserver?.unobserve(item.target);
-        if (observedCovers.has(key)) continue;
-        observedCovers.add(key);
-        enqueueCover(key, true);
-      }
-    },
-    { rootMargin: "300px" }
-  );
-  for (const node of nodes) coverObserver.observe(node);
-  if (mode.value === "comics") prefetchCovers(comics.value.map((b) => b.key));
+const longPress = useCellLongPress({
+  selector: ".book-cell",
+  resolveHit: (cell) => cardMap.get(cell.dataset.key) || null,
+  onHit: (hit, x, y) => openItemMenu(hit.item, hit.kind, x, y),
+  onEmpty: (x, y) => openGenericMenu(x, y),
+});
+
+const onHomeContextMenu = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const cell = e.target?.closest?.(".book-cell");
+  const key = cell?.dataset?.key;
+  const found = key ? cardMap.get(key) : null;
+  if (found) openItemMenu(found.item, found.kind, e.clientX, e.clientY);
+  else openGenericMenu(e.clientX, e.clientY);
 };
 
-const pageRef = ref(null);
-let savedScroll = 0;
-
-const onPageScroll = () => {
-  if (pageRef.value) savedScroll = pageRef.value.scrollTop;
+const openItemMenu = (item, kind, x, y) => {
+  const isAndroid = booksStore.platform === "android";
+  openContextMenu({
+    x,
+    y,
+    items: [
+      {
+        id: "open",
+        label: "打开",
+        icon: kind === "comic" ? "book-open" : "play",
+        onSelect: () => {
+          closeContextMenu();
+          if (kind === "comic") openBook(item);
+          else openMedia(item);
+        },
+      },
+      {
+        id: "copy",
+        label: "复制路径",
+        icon: "book-copy",
+        onSelect: () => copyPath(item),
+      },
+      {
+        id: "tags",
+        label: "编辑标签",
+        icon: "tag",
+        onSelect: () => editTags(item),
+      },
+      {
+        id: "reveal",
+        label: "在文件管理器中显示",
+        icon: "folder-open",
+        hidden: isAndroid,
+        onSelect: () => revealPath(item),
+      },
+      {
+        id: "delete",
+        label: "删除",
+        icon: "trash",
+        danger: true,
+        onSelect: () => requestDelete(item, kind === "media"),
+      },
+    ],
+  });
 };
+
+const lazyCovers = useLazyCovers({
+  selector: ".home-page .book-cover, .home-page .media-cover",
+  prefetch: () => {
+    if (mode.value === "comics") prefetchCovers(comics.value);
+    else if (mode.value === "media") prefetchCovers(media.value);
+  },
+});
+const observeCovers = () => lazyCovers.observe();
+
+const onPageScroll = () => homeScroll.capture();
 
 onMounted(() => {
   pageRef.value?.addEventListener("scroll", onPageScroll, { passive: true });
+  // 主界面（hub）入场动画只在首次挂载播一次，返回主界面时直接出现
+  markEntrancePlayed("home.hub");
 });
 
 onActivated(() => {
-  nextTick(() => {
-    if (pageRef.value && savedScroll) pageRef.value.scrollTop = savedScroll;
-  });
+  // 系统返回键接管：在漫画/媒体聚合视图时，返回键先回到 hub 双卡片
+  // （由 main.js 的 __handleAndroidBack 优先调用）。
+  window.__dirBack = () => {
+    if (mode.value !== "hub") {
+      backToHub();
+      return true;
+    }
+    return false;
+  };
+  restorePageScroll();
   observeCovers();
 });
 
 onDeactivated(() => {
-  coverObserver?.disconnect();
-  stopPrefetch();
+  closeContextMenu();
+  // 如果点击入口时已保存过，checkpoint 会复用那份快照，避免隐藏后的 0 覆盖它。
+  freezeHomeScroll();
+  lazyCovers.reset();
+  window.__dirBack = undefined;
 });
 
 onUnmounted(() => {
   pageRef.value?.removeEventListener("scroll", onPageScroll);
-  coverObserver?.disconnect();
-  stopPrefetch();
+  cancelIdlePrefetch();
+  lazyCovers.reset();
 });
 
-const mediaIcon = (item) =>
-  item.kind === "video-folder" || isVideo(item.ext) ? "play" : "image";
 </script>
 
 <template>
-  <div class="home-page" ref="pageRef">
+  <div
+    class="home-page"
+    ref="pageRef"
+    @contextmenu="onHomeContextMenu"
+    @touchstart="longPress.onTouchStart"
+    @touchmove="longPress.onTouchMove"
+    @touchend="longPress.onTouchEnd"
+    @touchcancel="longPress.onTouchCancel"
+  >
     <!-- 主界面：全量聚合中心入口 -->
     <template v-if="mode === 'hub'">
-      <section class="shelf-hero reveal">
+      <section class="shelf-hero" :class="{ reveal: entranceActive('home.hub') }">
         <div class="hero-titles">
           <div class="kicker">01 / HOME · 聚合中心</div>
           <h1 class="hero-title">主界面</h1>
@@ -254,40 +478,72 @@ const mediaIcon = (item) =>
       </section>
 
       <div class="hub-grid">
-        <button class="hub-card hub-card--comic reveal" @click="enter('comics')">
+        <button
+          class="hub-card hub-card--comic"
+          :class="{ reveal: entranceActive('home.hub') }"
+          :style="entranceActive('home.hub') ? { animationDelay: '0ms' } : undefined"
+          @click="enter('comics')"
+        >
           <div class="hub-art">
-            <span class="hub-art-no mono">A</span>
-            <Icon id="book-open" :size="44" class="hub-ico" :stroke-width="1.6" />
+            <span class="hub-art-no mono">A — 01</span>
+            <span class="hub-art-glyph" aria-hidden="true">漫</span>
+            <span class="hub-art-tile">
+              <Icon id="book-open" :size="38" class="hub-ico" :stroke-width="1.5" />
+            </span>
             <span class="hub-art-line"></span>
           </div>
           <div class="hub-body">
-            <div class="hub-name">
-              漫画
-              <span class="hub-tag mono">全集</span>
+            <div class="hub-kicker mono">
+              <span>COMICS</span>
+              <i></i>
+              <span>全集</span>
             </div>
+            <div class="hub-name">漫画</div>
             <p class="hub-desc">所有收藏的漫画，在这里一册不落</p>
-            <div class="hub-meta mono">
-              <span class="hub-num">{{ scanning ? "…" : comics.length }}</span>
-              <span>部作品 · {{ favoriteDirs.length }} 个收藏夹</span>
+            <div class="hub-foot">
+              <div class="hub-stats mono">
+                <span class="hub-num">{{ scanning ? "…" : comics.length }}</span>
+                <span class="hub-stat-label">部作品</span>
+                <i></i>
+                <span class="hub-num">{{ favoriteDirs.length }}</span>
+                <span class="hub-stat-label">个收藏夹</span>
+              </div>
+              <span class="hub-go"><Icon id="arrow-right" :size="17" /></span>
             </div>
           </div>
         </button>
 
-        <button class="hub-card hub-card--media reveal" @click="enter('media')">
+        <button
+          class="hub-card hub-card--media"
+          :class="{ reveal: entranceActive('home.hub') }"
+          :style="entranceActive('home.hub') ? { animationDelay: '110ms' } : undefined"
+          @click="enter('media')"
+        >
           <div class="hub-art">
-            <span class="hub-art-no mono">B</span>
-            <Icon id="film" :size="44" class="hub-ico" :stroke-width="1.6" />
+            <span class="hub-art-no mono">B — 02</span>
+            <span class="hub-art-glyph" aria-hidden="true">影</span>
+            <span class="hub-art-tile">
+              <Icon id="film" :size="38" class="hub-ico" :stroke-width="1.5" />
+            </span>
             <span class="hub-art-line"></span>
           </div>
           <div class="hub-body">
-            <div class="hub-name">
-              视频图包
-              <span class="hub-tag mono">放映</span>
+            <div class="hub-kicker mono">
+              <span>MEDIA</span>
+              <i></i>
+              <span>放映</span>
             </div>
+            <div class="hub-name">影视图集</div>
             <p class="hub-desc">影像与图集，一页尽览</p>
-            <div class="hub-meta mono">
-              <span class="hub-num">{{ scanning ? "…" : media.length }}</span>
-              <span>视频 / 图包 · {{ favoriteDirs.length }} 个收藏夹</span>
+            <div class="hub-foot">
+              <div class="hub-stats mono">
+                <span class="hub-num">{{ scanning ? "…" : media.length }}</span>
+                <span class="hub-stat-label">部作品</span>
+                <i></i>
+                <span class="hub-num">{{ mediaGroups.length }}</span>
+                <span class="hub-stat-label">个目录</span>
+              </div>
+              <span class="hub-go"><Icon id="arrow-right" :size="17" /></span>
             </div>
           </div>
         </button>
@@ -296,7 +552,7 @@ const mediaIcon = (item) =>
 
     <!-- 聚合视图 -->
     <template v-else>
-      <section class="shelf-hero shelf-hero--inner reveal">
+      <section class="shelf-hero shelf-hero--inner" :class="{ reveal: entranceActive('home.' + mode) }">
         <button class="back-btn" @click="backToHub">
           <Icon id="arrow-left" :size="16" />
           <span>返回主界面</span>
@@ -305,10 +561,10 @@ const mediaIcon = (item) =>
           <div class="kicker">
             {{ mode === "comics" ? "01 / COMICS · 全量书库" : "01 / MEDIA · 影像图集" }}
           </div>
-          <h1 class="hero-title">{{ mode === "comics" ? "漫画" : "视频图包" }}</h1>
+          <h1 class="hero-title">{{ mode === "comics" ? "漫画" : "影视图集" }}</h1>
         </div>
         <div class="hero-meta mono" v-if="!scanning">
-          <span>{{ (mode === "comics" ? comics : media).length }} {{ mode === "comics" ? "部作品" : "个视频 / 图包" }}</span>
+          <span>{{ (mode === "comics" ? comics : media).length }} {{ mode === "comics" ? "部作品" : "个作品" }}</span>
           <i></i>
           <span>来自 {{ favoriteDirs.length }} 个收藏夹</span>
         </div>
@@ -323,9 +579,11 @@ const mediaIcon = (item) =>
         <li
           v-for="(book, i) in comics"
           :key="book.key"
-          class="book-cell reveal"
-          :style="{ animationDelay: `${Math.min(i * 36, 500)}ms` }"
-          @click="openBook(book)"
+          class="book-cell"
+          :class="{ reveal: shouldReveal(i, 'home.comics') }"
+          :data-key="book.key"
+          :style="shouldReveal(i, 'home.comics') ? { animationDelay: `${Math.min(i * 36, 500)}ms` } : undefined"
+          @click="longPress.onCellClick(() => openBook(book))"
         >
           <div class="book-cover" :data-key="book.key">
             <img
@@ -337,39 +595,69 @@ const mediaIcon = (item) =>
               decoding="async"
             />
             <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
-            <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
-            <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
+            <template v-if="settings.showSource">
+              <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
+              <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
+            </template>
           </div>
           <div class="book-name">
-            <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
+            {{ book.name }}
           </div>
         </li>
       </ul>
 
-      <!-- 视频图包聚合 -->
-      <ul v-else-if="mode === 'media' && media.length" class="book-grid">
-        <li
-          v-for="(item, i) in media"
-          :key="item.key"
-          class="book-cell reveal"
-          :style="{ animationDelay: `${Math.min(i * 36, 500)}ms` }"
-          @click="openMedia(item)"
+      <!-- 影视图集聚合：按收藏夹分组展示 -->
+      <div v-else-if="mode === 'media' && mediaGroups.length" class="media-grouped">
+        <section
+          v-for="(group, g) in mediaGroups"
+          :key="group.path"
+          class="media-group"
+          :class="{ 'is-compact': group.compact }"
         >
-          <div class="book-cover book-cover--media" :data-key="item.key" :data-kind="item.kind">
-            <span class="book-cover-ph"><Icon :id="mediaIcon(item)" :size="34" /></span>
-            <span class="book-ext mono">{{ item.kind === "video-folder" ? item.count + " 集" : item.ext.toUpperCase() }}</span>
-            <span v-if="item.folder" class="book-folder mono">{{ item.folder }}</span>
+          <div v-if="!group.compact" class="media-group-head">
+            <button class="media-group-folder" @click="openMediaGroup(group)">
+              <Icon id="folder" :size="18" />
+              <span class="media-group-name">{{ group.name }}</span>
+              <span class="media-group-count mono">{{ group.items.length }} 个作品</span>
+              <Icon id="chevron-right" :size="16" />
+            </button>
           </div>
-          <div class="book-name">
-            <n-ellipsis :tooltip="false">{{ item.name }}</n-ellipsis>
-          </div>
-        </li>
-      </ul>
+          <ul class="book-grid">
+            <li
+              v-for="(item, i) in group.items"
+              :key="item.key"
+              class="book-cell"
+              :class="{ reveal: entranceActive('home.media') }"
+              :data-key="item.key"
+              :style="entranceActive('home.media') ? { animationDelay: `${Math.min((g * 8 + i) * 36, 500)}ms` } : undefined"
+              @click="longPress.onCellClick(() => openMedia(item))"
+            >
+              <MediaCover
+                :kind="item.kind"
+                :ext="item.ext"
+                :count="item.count"
+                :child-count="item.childCount"
+                :video-count="item.videoCount"
+                :image-count="item.imageCount"
+                :index="i"
+                :folder="group.name"
+                :src="covers[item.key]"
+                :meta="settings.showSource"
+                :data-key="item.key"
+                :data-kind="item.kind"
+              />
+              <div class="book-name">
+                <n-ellipsis :tooltip="false">{{ item.name }}</n-ellipsis>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
 
       <!-- 空状态 -->
       <div v-else class="empty-state">
         <Icon :id="mode === 'comics' ? 'book-open' : 'film'" :size="38" />
-        <p class="empty-title">{{ mode === "comics" ? "还没有收藏的漫画" : "还没有视频图包" }}</p>
+        <p class="empty-title">{{ mode === "comics" ? "还没有收藏的漫画" : "还没有影视图集" }}</p>
         <p class="empty-sub">
           {{
             mode === "comics"
@@ -400,6 +688,11 @@ const mediaIcon = (item) =>
     radial-gradient(60% 45% at 85% -5%, var(--accent-soft), transparent 60%),
     radial-gradient(45% 40% at -10% 30%, color-mix(in srgb, var(--accent-2) 8%, transparent), transparent 60%),
     var(--bg-0);
+}
+
+/* 深色模式：去掉暖橙/荧光绿柔光，只保留全局暗角降亮度，避免焦黄滤镜感 */
+:global(.theme-dark) .home-page {
+  background: var(--bg-0);
 }
 
 /* 幽灵水印 */
@@ -508,8 +801,8 @@ const mediaIcon = (item) =>
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 28px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 30px;
   padding: 0;
 }
 
@@ -519,36 +812,36 @@ const mediaIcon = (item) =>
   flex-direction: column;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--bg-2);
   overflow: hidden;
   cursor: pointer;
   text-align: left;
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out), border-color 0.3s;
+  isolation: isolate;
+  transition: transform 0.5s var(--ease-spring), box-shadow 0.5s var(--ease-out), border-color 0.3s var(--ease-out);
 
   &:hover {
     transform: translateY(-8px);
     border-color: var(--line-strong);
     box-shadow: var(--shadow-2);
+  }
 
-    .hub-art {
-      transform: scale(1.04);
-    }
-    .hub-ico {
-      transform: translateY(-4px) scale(1.08);
-    }
-    .hub-num {
-      color: var(--accent);
-    }
+  &:active {
+    transform: scale(0.985);
   }
 }
 
+/* 色带舞台：漫画 = 朱砂橙，影视 = 靛蓝 */
 .hub-card--comic .hub-art {
-  background: linear-gradient(150deg, #e6391f 0%, #ff7a45 55%, #ffd166 100%);
+  background:
+    radial-gradient(130% 100% at 86% 6%, rgba(255, 255, 255, 0.28), transparent 52%),
+    linear-gradient(150deg, #b91f0e 0%, #e6391f 36%, #ff7a45 72%, #ffb45c 100%);
 }
 
 .hub-card--media .hub-art {
-  background: linear-gradient(150deg, #1f6feb 0%, #5b8cff 60%, #9db8ff 100%);
+  background:
+    radial-gradient(130% 100% at 86% 6%, rgba(255, 255, 255, 0.26), transparent 52%),
+    linear-gradient(150deg, #103a8c 0%, #1f6feb 36%, #5b8cff 72%, #93b4ff 100%);
 }
 
 .hub-art {
@@ -557,81 +850,284 @@ const mediaIcon = (item) =>
   display: grid;
   place-items: center;
   overflow: hidden;
-  transition: transform 0.6s var(--ease-out);
+  isolation: isolate;
 
-  .hub-art-no {
+  /* 噪点 + 斜向高光（纯 alpha，不叠加 blend，避免合成降帧） */
+  &::before {
+    content: "";
     position: absolute;
-    top: 14px;
-    left: 16px;
-    font-size: 11px;
-    letter-spacing: 0.2em;
-    color: rgba(255, 255, 255, 0.78);
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity: 0.12;
   }
 
-  .hub-ico {
-    color: rgba(255, 255, 255, 0.95);
-    filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.35));
-    transition: transform 0.45s var(--ease-spring);
-  }
-
-  .hub-art-line {
+  &::after {
+    content: "";
     position: absolute;
-    bottom: 0;
-    left: 16px;
-    right: 16px;
-    height: 1px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.65), transparent);
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+      linear-gradient(112deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 40%),
+      repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 15px);
   }
 }
 
+/* 幽灵字：漫 / 影 大号描边字，藏在色带右下 */
+.hub-art-glyph {
+  position: absolute;
+  z-index: 0;
+  right: -4%;
+  bottom: -26%;
+  font-family: var(--serif);
+  font-size: clamp(130px, 16vw, 210px);
+  font-weight: 900;
+  line-height: 1;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.3);
+  user-select: none;
+  pointer-events: none;
+  transform: rotate(-7deg);
+}
+
+/* 编号索引：A — 01 / B — 02 */
+.hub-art-no {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  left: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.75);
+
+  &::after {
+    content: "";
+    width: 26px;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.55;
+  }
+}
+
+/* 悬浮玻璃图标砖 */
+.hub-art-tile {
+  position: relative;
+  z-index: 2;
+  width: 78px;
+  height: 78px;
+  display: grid;
+  place-items: center;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.13);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  animation: hubFloat 6.5s var(--ease-in-out) infinite;
+
+  .hub-ico {
+    color: #fff;
+    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.34));
+    transition: transform 0.45s var(--ease-spring);
+  }
+}
+
+.hub-card:hover .hub-art-tile .hub-ico {
+  transform: translateY(-3px) scale(1.12);
+}
+
+.hub-art-line {
+  position: absolute;
+  z-index: 2;
+  bottom: 0;
+  left: 18px;
+  right: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.7), transparent);
+}
+
+/* ===== 卡片正文 ===== */
 .hub-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 20px 22px 22px;
+  padding: 22px 24px 20px;
+}
+
+.hub-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--text-3);
+
+  i {
+    width: 24px;
+    height: 1px;
+    background: var(--accent);
+  }
 }
 
 .hub-name {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   font-family: var(--serif);
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-size: clamp(27px, 2.8vw, 36px);
+  font-weight: 900;
+  line-height: 1.04;
+  letter-spacing: 0.1em;
   color: var(--text-1);
-}
-
-.hub-tag {
-  font-size: 9px;
-  letter-spacing: 0.24em;
-  padding: 3px 8px;
-  border-radius: 999px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .hub-desc {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-3);
+  max-width: 30em;
 }
 
-.hub-meta {
+.hub-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.hub-stats {
   display: flex;
   align-items: baseline;
   gap: 8px;
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   color: var(--text-3);
+  flex-wrap: wrap;
+  min-width: 0;
+
+  i {
+    width: 3px;
+    height: 3px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    align-self: center;
+  }
 
   .hub-num {
-    font-size: 22px;
+    font-size: 21px;
     font-weight: 700;
     color: var(--text-1);
     transition: color 0.3s;
   }
+
+  .hub-stat-label {
+    margin-right: 3px;
+  }
+}
+
+.hub-card:hover .hub-num {
+  color: var(--accent);
+}
+
+/* 圆形进入按钮 */
+.hub-go {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--text-2);
+  transition: background 0.35s var(--ease-out), color 0.35s var(--ease-out), border-color 0.35s var(--ease-out), transform 0.4s var(--ease-spring), box-shadow 0.35s var(--ease-out);
+}
+
+.hub-card:hover .hub-go {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #fff;
+  transform: translateX(4px) rotate(-45deg);
+  box-shadow: var(--glow);
+}
+
+/* 图标砖悬浮动效 */
+@keyframes hubFloat {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-9px) rotate(2deg);
+  }
+}
+
+/* ===== 按收藏夹分组的媒体作品 ===== */
+.media-grouped {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 46px;
+}
+
+.media-group {
+  &.is-compact {
+    .book-grid {
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    }
+  }
+}
+
+.media-group-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.media-group-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  transition: color 0.25s var(--ease-out), border-color 0.25s var(--ease-out), transform 0.25s var(--ease-out);
+
+  &:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+}
+
+.media-group-name {
+  font-weight: 600;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-group-count {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-3);
 }
 
 /* ===== 书籍网格 ===== */
@@ -651,6 +1147,12 @@ const mediaIcon = (item) =>
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  /* 屏外卡片跳过布局/绘制：封面数量多时避免快速滚动整屏 reflow/白屏 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .book-cover {
@@ -661,7 +1163,7 @@ const mediaIcon = (item) =>
   background: var(--bg-2);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-1);
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
+  transition: transform 0.45s var(--ease-spring);
   display: grid;
   place-items: center;
 
@@ -676,16 +1178,22 @@ const mediaIcon = (item) =>
   }
 }
 
-.book-cover--media {
-  aspect-ratio: 1 / 1.414;
-}
-
 .book-cell:hover .book-cover {
   transform: translateY(-6px) scale(1.02);
   box-shadow: var(--shadow-2);
   &::after {
     opacity: 1;
   }
+}
+
+/* 夜间模式只保留一层界面级暗角，避免为每张封面单独绘制阴影。 */
+:global(.theme-dark) .home-page {
+  box-shadow: inset 0 0 52px rgba(0, 0, 0, 0.3);
+}
+
+:global(.theme-dark) .book-cover,
+:global(.theme-dark) .book-cell:hover .book-cover {
+  box-shadow: none;
 }
 
 .book-cover-img {
@@ -707,11 +1215,12 @@ const mediaIcon = (item) =>
   bottom: 8px;
   padding: 3px 7px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   color: rgba(255, 255, 255, 0.9);
   font-size: 9px;
   letter-spacing: 0.12em;
-  backdrop-filter: blur(6px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.72);
 }
 
 .book-folder {
@@ -721,14 +1230,15 @@ const mediaIcon = (item) =>
   max-width: 55%;
   padding: 3px 7px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.64);
+  border: 1px solid rgba(255, 255, 255, 0.13);
   color: rgba(255, 255, 255, 0.82);
   font-size: 9px;
   letter-spacing: 0.1em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  backdrop-filter: blur(6px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.72);
 }
 
 .book-name {
@@ -809,10 +1319,288 @@ const mediaIcon = (item) =>
   }
 }
 
+/* ===== 横屏 / 矮视口：压缩 hero + 卡片改横向，保证一屏展示完毕 =====
+   覆盖横屏平板（1152×720）与桌面矮窗口（1080×720）：垂直大卡 + 大标题
+   会撑到 ~800px 高被迫滚动；这里把色带挪到左侧、收紧留白，整页 ~540px。 */
+@media (min-width: 900px) and (max-height: 840px) {
+  .home-page {
+    padding-top: 96px;
+    padding-bottom: 40px;
+  }
+
+  .shelf-hero {
+    margin-bottom: 22px;
+  }
+
+  .hero-title {
+    font-size: clamp(36px, 3.6vw, 48px);
+  }
+
+  .hub-grid {
+    gap: 18px;
+  }
+
+  .hub-card {
+    flex-direction: row;
+    align-items: stretch;
+    border-radius: 18px;
+    min-height: 0;
+  }
+
+  .hub-art {
+    aspect-ratio: auto;
+    flex: 0 0 38%;
+    min-height: 0;
+  }
+
+  .hub-art-no {
+    top: 12px;
+    left: 14px;
+  }
+
+  .hub-art-glyph {
+    font-size: clamp(90px, 9vw, 150px);
+  }
+
+  .hub-art-tile {
+    width: 60px;
+    height: 60px;
+    border-radius: 18px;
+  }
+
+  .hub-body {
+    padding: 16px 18px 14px;
+    gap: 7px;
+  }
+
+  .hub-name {
+    font-size: clamp(24px, 2.2vw, 30px);
+  }
+
+  .hub-desc {
+    font-size: 12px;
+  }
+
+  .hub-foot {
+    padding-top: 10px;
+  }
+
+  .hub-stats .hub-num {
+    font-size: 18px;
+  }
+
+  .hub-go {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+/* ===== 竖屏 / 窄屏：双卡片改为纵向堆叠的横向编辑面板 =====
+   桌面 auto-fit 的细长列在竖屏下会挤成 130px 窄卡，形状惨不忍睹；
+   这里改成一列通栏，色带在左、正文在右，手机上再转回上下结构。 */
 @media (max-width: 900px) {
-  .hub-grid,
+  /* 书/漫画网格保持多列紧凑排布 */
   .book-grid {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  }
+
+  /* 主界面入口卡片：全宽堆叠 */
+  .hub-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .shelf-hero {
+    margin-bottom: 30px;
+  }
+
+  .hero-title {
+    font-size: clamp(38px, 8vw, 54px);
+  }
+
+  .hub-card {
+    flex-direction: row;
+    align-items: stretch;
+    border-radius: 20px;
+    min-height: 200px;
+  }
+
+  .hub-art {
+    aspect-ratio: auto;
+    flex: 0 0 42%;
+    min-height: 200px;
+  }
+
+  .hub-art-glyph {
+    font-size: clamp(110px, 24vw, 190px);
+  }
+
+  .hub-body {
+    padding: 20px 22px 18px;
+    gap: 9px;
+  }
+
+  .hub-name {
+    font-size: clamp(28px, 6.4vw, 40px);
+  }
+
+  /* 手机窄屏：保持紧凑横向入口，避免两张入口退化成占据半屏的大卡。 */
+  @media (max-width: 560px) {
+    .home-page {
+      padding: 84px 14px 104px;
+    }
+
+    .shelf-hero {
+      margin-bottom: 18px;
+    }
+
+    .hero-title {
+      font-size: clamp(34px, 10vw, 42px);
+    }
+
+    .hero-sub {
+      margin-top: 1px;
+      font-size: 10px;
+      letter-spacing: 0.2em;
+    }
+
+    .hub-grid {
+      gap: 12px;
+    }
+
+    .hub-card {
+      flex-direction: row;
+      min-height: 132px;
+      border-radius: 16px;
+    }
+
+    .hub-art {
+      flex: 0 0 36%;
+      width: auto;
+      aspect-ratio: auto;
+      min-height: 132px;
+    }
+
+    .hub-art-no {
+      top: 10px;
+      left: 11px;
+      gap: 5px;
+      font-size: 8px;
+
+      &::after {
+        width: 16px;
+      }
+    }
+
+    .hub-art-glyph {
+      right: -10%;
+      bottom: -18%;
+      font-size: clamp(82px, 25vw, 112px);
+    }
+
+    .hub-art-tile {
+      width: 50px;
+      height: 50px;
+      border-radius: 15px;
+
+      .hub-ico {
+        width: 26px !important;
+        height: 26px !important;
+      }
+    }
+
+    .hub-art-line {
+      left: 11px;
+      right: 11px;
+    }
+
+    .hub-body {
+      padding: 14px 15px 12px;
+      gap: 5px;
+    }
+
+    .hub-kicker {
+      font-size: 8px;
+      letter-spacing: 0.2em;
+
+      i {
+        width: 14px;
+      }
+    }
+
+    .hub-name {
+      font-size: clamp(23px, 6.8vw, 28px);
+    }
+
+    .hub-desc {
+      display: none;
+    }
+
+    .hub-foot {
+      gap: 8px;
+      padding-top: 7px;
+    }
+
+    .hub-stats {
+      gap: 5px;
+      font-size: 9px;
+
+      .hub-num {
+        font-size: 17px;
+      }
+    }
+
+    .hub-go {
+      width: 32px;
+      height: 32px;
+    }
+  }
+}
+
+/* 手机宽度（正常手机约 360-430px）：卡片网格流式列数（≥3 列，随宽度自动算），
+   卡片自动变小、默认隐藏名字 */
+@media (max-width: 480px) {
+  .book-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 14px 8px;
+  }
+
+  .book-name {
+    display: none;
+  }
+}
+
+/* ===== 触屏（hover:none）：删除无 hover 语义的悬浮/位移动画 =====
+   触屏没有「悬停」状态，这些位移只会在按下瞬间抖动、长按时把卡片
+   钉在浮起态，并与滚动恢复的锚点校正重叠。:hover 的颜色/描边反馈
+   保留（瞬时无害），:active 按压与骨架屏加载指示不动。 */
+@media (hover: none) {
+  .hub-card:hover {
+    transform: none;
+  }
+
+  .hub-card:hover .hub-go {
+    transform: none;
+  }
+
+  .hub-card:hover .hub-art-tile .hub-ico,
+  .hub-card:hover .hub-num {
+    transform: none;
+  }
+
+  .hub-art-tile {
+    animation: none;
+  }
+
+  .media-group-folder:hover,
+  .back-btn:hover,
+  .empty-cta:hover {
+    transform: none;
+  }
+
+  .book-cell:hover .book-cover,
+  .media-cover:hover {
+    transform: none;
   }
 }
 </style>
