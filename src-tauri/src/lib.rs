@@ -115,6 +115,9 @@ async fn read_cover_cache_batch(
 /// “所有文件访问权限”桥接（Android 11+ 的 MANAGE_EXTERNAL_STORAGE）
 struct AllFilesAccess<R: tauri::Runtime>(tauri::plugin::PluginHandle<R>);
 
+/// Android 系统栏控制桥接（透明显示 / 沉浸式隐藏）
+struct SystemUiAccess<R: tauri::Runtime>(tauri::plugin::PluginHandle<R>);
+
 #[derive(serde::Deserialize)]
 struct BoolValue {
     value: bool,
@@ -160,6 +163,58 @@ fn open_all_files_access_settings(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// 控制 Android 系统栏显隐。immersive=true：隐藏系统栏（沉浸式播放/阅读）；
+/// false：显示透明系统栏。is_dark 决定系统栏图标明暗（随应用主题）。
+/// 返回系统栏当前占用的 CSS 像素（{top, bottom}，沉浸式时为 0），
+/// 前端据此让顶部/底部内容避让。非 Android 恒返回 {0, 0}。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BarInsets {
+    top: f64,
+    bottom: f64,
+}
+
+#[tauri::command]
+fn set_system_bars(app: tauri::AppHandle, immersive: bool, is_dark: bool) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let handle = app.state::<SystemUiAccess<tauri::Wry>>();
+        let payload = serde_json::json!({ "immersive": immersive, "isDark": is_dark });
+        handle
+            .0
+            .run_mobile_plugin::<serde_json::Value>("setImmersive", payload)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, immersive, is_dark);
+        Ok(())
+    }
+}
+
+/// 查询当前系统栏占用（CSS px，{top, bottom}；沉浸式隐藏时为 0）。
+#[tauri::command]
+fn get_system_bar_insets(app: tauri::AppHandle) -> Result<BarInsets, String> {
+    #[cfg(target_os = "android")]
+    {
+        let handle = app.state::<SystemUiAccess<tauri::Wry>>();
+        let r = handle
+            .0
+            .run_mobile_plugin::<serde_json::Value>("getInsets", "")
+            .map_err(|e| e.to_string())?;
+        Ok(BarInsets {
+            top: r.get("top").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            bottom: r.get("bottom").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(BarInsets { top: 0.0, bottom: 0.0 })
+    }
 }
 
 #[tauri::command]
@@ -285,6 +340,20 @@ pub fn run() {
 
     builder
         .plugin(
+            tauri::plugin::Builder::new("systemui")
+                .setup(|app: &tauri::AppHandle, api: tauri::plugin::PluginApi<tauri::Wry, ()>| {
+                    #[cfg(target_os = "android")]
+                    {
+                        let handle = api
+                            .register_android_plugin("com.tauri_app.reader", "SystemUiPlugin")
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                        app.manage(SystemUiAccess(handle));
+                    }
+                    Ok(())
+                })
+                .build(),
+        )
+        .plugin(
             tauri::plugin::Builder::new("allfiles")
                 .setup(|app: &tauri::AppHandle, api: tauri::plugin::PluginApi<tauri::Wry, ()>| {
                     #[cfg(target_os = "android")]
@@ -356,6 +425,8 @@ pub fn run() {
             check_all_files_access,
             open_all_files_access_settings,
             get_primary_storage_path,
+            set_system_bars,
+            get_system_bar_insets,
             exit_app,
             mpv::mpv_play,
             mpv::mpv_set_bounds,
