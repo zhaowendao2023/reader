@@ -164,7 +164,7 @@ const handleMenuSelect = (key) => {
 /* ===== 侧栏 ===== */
 .nav-rail {
   position: absolute;
-  top: 0;
+  top: var(--sys-top, 0);
   left: 0;
   bottom: 0;
   z-index: 20;
@@ -343,7 +343,7 @@ const handleMenuSelect = (key) => {
 /* ===== 主区域 ===== */
 .main-area {
   position: absolute;
-  top: 0;
+  top: var(--sys-top, 0);
   right: 0;
   bottom: 0;
   left: var(--rail-w);
@@ -389,7 +389,8 @@ const handleMenuSelect = (key) => {
     z-index: 25;
     display: flex;
     align-items: stretch;
-    height: 58px;
+    height: calc(58px + var(--sys-bottom, 0));
+    padding-bottom: var(--sys-bottom, 0);
     background: color-mix(in srgb, var(--bg-1) 92%, transparent);
     border-top: 1px solid var(--line);
     box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.06);

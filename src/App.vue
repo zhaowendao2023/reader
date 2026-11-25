@@ -25,6 +25,7 @@ import router from "./router";
 import { getBookInfo, ensureCoverCache, cleanupLegacyCoverCache } from "./utils/bookData";
 import { calculateHash } from "./utils/utils";
 import { openGenericMenu } from "./utils/contextMenu";
+import { syncSystemUiTheme } from "./utils/systemBar";
 import ContextMenu from "./components/ContextMenu.vue";
 import TagEditor from "./components/TagEditor.vue";
 
@@ -53,6 +54,8 @@ watch(
   (v) => {
     document.documentElement.classList.toggle("theme-dark", !v);
     document.documentElement.classList.toggle("theme-light", !!v);
+    // 系统栏图标颜色随主题明暗切换（授予透明系统栏）
+    syncSystemUiTheme(!v);
   },
   { immediate: true }
 );
