@@ -1,6 +1,7 @@
 <script setup>
 import MobiReading from "./MobiReading.vue";
 import { flushProgress, setProgress } from "../utils/progress";
+import { enterSystemUIImmersive, exitSystemUIImmersive } from "../utils/systemBar";
 
 const containerRef = ref(null);
 const route = useRoute();
@@ -71,7 +72,11 @@ const moveMethods = {
   slider: (n) => containerRef.value?.slider?.(n),
 };
 provide("moveMethods", moveMethods);
+onMounted(() => {
+  enterSystemUIImmersive();
+});
 onUnmounted(() => {
+  exitSystemUIImmersive();
   void flushProgress();
 });
 </script>

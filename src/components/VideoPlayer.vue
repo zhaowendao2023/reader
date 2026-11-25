@@ -11,6 +11,7 @@ import { flushProgress, getVideoProgressEntry, getVideoProgressMap, setVideoProg
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
+import { enterSystemUIImmersive, exitSystemUIImmersive } from "../utils/systemBar";
 import Icon from "./Icon.vue";
 
 defineOptions({ name: "VideoPlayer" });
@@ -947,6 +948,7 @@ const fmt = (seconds) => {
 
 onMounted(async () => {
   alive = true;
+  enterSystemUIImmersive();
   document.documentElement.classList.add("video-mode");
   appWindow.setBackgroundColor([0, 0, 0, 0]).catch(() => {});
   appWindow.show().catch(() => {});
@@ -979,6 +981,7 @@ watch(
 onUnmounted(() => {
   alive = false;
   closeContextMenu();
+  exitSystemUIImmersive();
   void (async () => {
     await saveNow();
     await flushProgress();

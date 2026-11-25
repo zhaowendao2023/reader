@@ -11,6 +11,7 @@ import {
   displayCacheSetDisplayed,
   displayCacheHas,
 } from "../utils/displayCache";
+import { enterSystemUIImmersive, exitSystemUIImmersive } from "../utils/systemBar";
 import Icon from "./Icon.vue";
 
 defineOptions({ name: "MediaViewer" });
@@ -507,6 +508,7 @@ const onStageClick = (e) => {
 
 onMounted(async () => {
   alive = true;
+  enterSystemUIImmersive();
   await init();
   window.addEventListener("keydown", onKey);
   window.addEventListener("resize", applyFit);
@@ -517,6 +519,7 @@ onMounted(async () => {
 onUnmounted(() => {
   alive = false;
   clearTimeout(bandTimer);
+  exitSystemUIImmersive();
   // 保存当前看图位置（防抖定时器可能还没触发写盘）
   savePackPosition();
   void flushProgress();
