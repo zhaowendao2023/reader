@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { covers, canonKey, enqueueCover, prefetchCovers } from "../store/browserCache";
 import { isVideo } from "../utils/media";
 import { openComic, openImage, openMediaPack, openVideo } from "../utils/open";
-import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
+import { scanAndSyncFavorite } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
@@ -84,17 +84,9 @@ const loading = ref(false);
 const loadCount = async (dir, rows) => {
   if (counts[dir.path] !== undefined) return;
   try {
-    const result = await scanFavoriteTree(dir.path, dir.name, 12, rowsFor(rows));
     // 扫描结果写回 SQLite 索引（含目录 mtime）：旧库没有 mtime 时首次全扫，
     // 写回后下次进入同一收藏夹即走 DB 快路径，不再整树 readDir。
-    if (result.dirty) {
-      try {
-        const entries = flattenScan(result, dir);
-        await syncFavoriteToDb(dir, entries);
-      } catch (error) {
-        console.error("loadCount sync failed:", dir.path, error);
-      }
-    }
+    const result = await scanAndSyncFavorite(dir, rowsFor(rows));
     counts[dir.path] = result.count;
     const root = result.root;
     let source = null;
@@ -138,16 +130,8 @@ const openDir = async (dir) => {
   loading.value = true;
   books.value = [];
   try {
-    const result = await scanFavoriteTree(dir.path, dir.name, 12, sharedRows);
     // 与 loadCount 相同：扫描结果写回索引（mtime），让下次进入走 DB 快路径
-    if (result.dirty) {
-      try {
-        const entries = flattenScan(result, dir);
-        await syncFavoriteToDb(dir, entries);
-      } catch (error) {
-        console.error("openDir sync failed:", dir.path, error);
-      }
-    }
+    const result = await scanAndSyncFavorite(dir, sharedRows);
     const root = result.root;
     currentDir.value = { name: dir.name, path: dir.path };
     displayScroll.clear({ stateKey: "display:dir", anchorKey: "display:dir" });

@@ -9,10 +9,9 @@ import {
   prefetchCovers,
   libraryVersion,
 } from "../store/browserCache";
-import { isVideo } from "../utils/media";
 import { byName, kindOfRow, nodeShape } from "../utils/libraryView";
 import { openComic, openLibraryItem, openMediaPack } from "../utils/open";
-import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
+import { scanAndSyncFavorite } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { invoke } from "@tauri-apps/api/core";
@@ -57,54 +56,31 @@ const restorePageScroll = (snapshot) => homeScroll.restoreAfterRender({ snapshot
 const ENTRANCE_CARD_LIMIT = 24;
 const shouldReveal = (index, key) => entranceActive(key) && index < ENTRANCE_CARD_LIMIT;
 
+// 冷路径（空库/索引未初始化/读取失败）：重扫全部收藏夹写回索引，再统一从
+// 索引行重建视图。视图模型只保留 applyLibrary 一份，扫描结果不再单独拼一遍，
+// 避免两条路径的展开语义（收藏根为媒体包时展开子目录 + 直接媒体）各写一遍。
 const scanAll = async () => {
   const dirs = favoriteDirs.value;
-  const comicMap = new Map();
-  const groups = [];
-  const tasks = dirs.map(async (dir) => {
-    try {
-      const result = await scanFavoriteTree(dir.path, dir.name);
-      // dirty=false 说明磁盘与 SQLite 索引一致（mtime 未变），无需重复写库
-      if (result.dirty) {
-        const entries = flattenScan(result, dir);
-        await syncFavoriteToDb(dir, entries);
-      }
-      for (const book of result.comics) comicMap.set(book.key, book);
-      let items = result.packs;
-      if (!items.length) return;
-      // 收藏根自身直接含媒体文件（pack）→ 展开为「子文件夹 + 直接媒体文件」条目：
-      // 影视图集聚合的是收藏夹内容，而不是收藏夹本身
-      const rootPack = items.length === 1 && items[0].path === dir.path ? items[0] : null;
-      if (rootPack) {
-        const dirs = rootPack.children || [];
-        const files = (rootPack.files || []).map((f) => ({
-          name: f.name,
-          key: canonKey(f.path),
-          path: f.path,
-          dir: rootPack.path,
-          folder: dir.name,
-          kind: isVideo(f.name) ? "video" : "image",
-          ext: f.ext || "",
-          count: 0,
-          videoCount: isVideo(f.name) ? 1 : 0,
-          imageCount: isVideo(f.name) ? 0 : 1,
-          childCount: 0,
-          children: [],
-          files: [],
-        }));
-        items = [...dirs, ...files];
-      }
-      if (!items.length) return;
-      const compact = !!rootPack;
-      groups.push({ path: dir.path, name: dir.name, items, compact });
-    } catch (error) {
-      console.error("scan failed:", dir.path, error);
-    }
-  });
-  await Promise.all(tasks);
-  comics.value = Array.from(comicMap.values()).sort(byName);
-  mediaGroups.value = groups.sort(byName);
-  media.value = groups.flatMap((g) => g.items).sort(byName);
+  let rows = null;
+  try {
+    rows = await invoke("list_items");
+  } catch (error) {
+    console.error("list_items failed:", error);
+  }
+  await Promise.all(
+    dirs.map((dir) =>
+      scanAndSyncFavorite(dir, rows).catch((error) => {
+        console.error("scan failed:", dir.path, error);
+      })
+    )
+  );
+  // 这里只重建视图，不向上抛：scanAll 也是 loadLibrary 失败后的兜底路径，
+  // 再抛会让兜底本身变成未捕获的 rejection。
+  try {
+    applyLibrary(await invoke("list_items"));
+  } catch (error) {
+    console.error("reload library rows failed:", error);
+  }
 };
 
 // Rebuild the in-memory view model (comics / media / mediaGroups) from DB rows.
@@ -187,11 +163,7 @@ const loadLibrary = async () => {
         // scanFavoriteTree 直接走 DB 快路径，不做深层 readDir。
         for (const dir of stale) {
           try {
-            const result = await scanFavoriteTree(dir.path, dir.name);
-            if (result.dirty) {
-              const entries = flattenScan(result, dir);
-              await syncFavoriteToDb(dir, entries);
-            }
+            await scanAndSyncFavorite(dir);
           } catch (error) {
             console.error("scan failed:", dir.path, error);
           }

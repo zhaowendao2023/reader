@@ -8,9 +8,9 @@
 pnpm dev
 ```
 
-打开 `http://localhost:1420/ui-test.html`。该页先注入 `scripts/ui-mock.js`（模拟 Tauri 的 fs / store / dialog / window 等 API），再加载 `/src/main.js`；内置虚拟磁盘 `F:\\` 与 `scripts/testbook*.cbz` / `scripts/testbook.epub` 作为测试书。
+打开 `http://localhost:1420/ui-test.html`。该页先注入 `scripts/ui-mock.js`（模拟 Tauri 的 fs / store / dialog / window 等 API），再加载 `/src/main.js`；内置虚拟磁盘 `F:\\` 与 `scripts/testbook*.cbz` / `scripts/testbook.epub` 作为测试书。库索引相关命令（`get_favorites` / `sync_favorite` / `list_items` / `library_meta`）也有一份内存实现，因此「扫描 → 落库 → 读行建视图」的 Home 全链路可以在浏览器里跑通。
 
-适合：布局、主题、列表/卡片交互、路由与返回栈。
+适合：布局、主题、列表/卡片交互、路由与返回栈、Home/收藏页的数据链路。
 不适合：真实文件系统、SQLite、mpv、Android 系统栏。
 
 ## 2. 前端编译验证

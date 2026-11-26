@@ -474,3 +474,18 @@ export const syncFavoriteToDb = async (favDir, entries) => {
   const [favorite, ...items] = entries;
   return invoke("sync_favorite", { favorite, entries: items });
 };
+
+// 扫描单个收藏夹并在结果变脏时写回索引。
+// 落库失败不向上抛：调用方仍要用这份内存结果渲染，而索引写失败会在下次
+// 扫描时重新置 dirty 重试，没必要因此让页面整体失败。
+export const scanAndSyncFavorite = async (dir, rows = null) => {
+  const result = await scanFavoriteTree(dir.path, dir.name, 12, rows);
+  if (result.dirty) {
+    try {
+      await syncFavoriteToDb(dir, flattenScan(result, dir));
+    } catch (error) {
+      console.error("sync favorite failed:", dir.path, error);
+    }
+  }
+  return result;
+};

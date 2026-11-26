@@ -19,7 +19,7 @@
 | `src/router/index.js` | 路由表 |
 | `src/components/` | 视图与交互：`LayOut`（外壳/导航）、`Home`（全量聚合）、`Display`（收藏分组）、`FileBrowser`、`SearchPage`、`TagBrowse`、`Settings`、`ComicReading`/`EpubReading`/`MobiReading`、`VideoPlayer`、`MediaViewer`、`MediaPack`；`BookCover`/`MediaCover` 是列表页共用的封面卡 |
 | `src/js/` | 格式解析：`read.js`（打开入口）、`comic-book.js`、`epub.js`、`mobi.js`；`vendor/fflate.js` 供 MOBI 解压 |
-| `src/utils/` | 数据与性能：`itemKey.js`（路径 key 与 `items.id` 的唯一入口）、`libraryView.js`（`ItemRow` → 卡片节点/排序）、`open.js`（打开条目的路由入口）、`itemMenu.js`（右键/长按菜单）、`bookData.js`（封面缓存/提取）、`mediaScan.js`（扫描 + 索引）、`progress.js`、`itemActions.js` |
+| `src/utils/` | 数据与性能：`itemKey.js`（路径 key 与 `items.id` 的唯一入口）、`libraryView.js`（`ItemRow` → 卡片节点/排序）、`open.js`（打开条目的路由入口）、`itemMenu.js`（右键/长按菜单）、`bookData.js`（书籍/封面对外入口）、`coverCache.js`（封面内存+磁盘缓存与批量读取）、`coverExtract.js`（按媒体类型提取封面）、`videoSession.js`（视频播放会话：命令/轮询/续播/音量倍速）、`mediaScan.js`（扫描 + 索引 + `scanAndSyncFavorite`）、`progress.js`、`itemActions.js` |
 | `src/store/` | Pinia：`loadBooks`（书库/收藏夹/主题）、`settings`（偏好）、`tags`、`browserCache`（目录/封面/滚动缓存） |
 | `src-tauri/src/` | `lib.rs`（命令注册）、`db.rs`（SQLite 与迁移）、`sync.rs`（索引/搜索）、`tags.rs`、`mpv.rs`（Windows 播放）、`video.rs`（Android 桥接）、`import.rs`（旧 `store.bin` 迁移）、`paths.rs` |
 | `src-tauri/migrations/` | 迁移 SQL：items/progress（v1）、tags（v3）、tag kind（v4） |
@@ -27,11 +27,11 @@
 
 ## 核心数据流
 
-1. **扫描建索引**：收藏夹存 SQLite（`items`，`kind` = comic/video/image/pack/group/favorite）。`Home` 启动 `list_items` + `library_meta`；库为空或未同步才走 `scanAll`。扫描用 Rust `read_dir_meta` 读目录自 mtime + 子项 mtime：未变子树直接从 SQLite 行重建（零 `readDir`），变了才重扫并 `sync_favorite` upsert。
+1. **扫描建索引**：收藏夹存 SQLite（`items`，`kind` = comic/video/image/pack/group/favorite）。`Home` 启动 `list_items` + `library_meta`；库为空或未同步才走 `scanAll`（扫描 → `sync_favorite` → 重新读行建视图，视图模型只有 `applyLibrary` 一份）。扫描用 Rust `read_dir_meta` 读目录自 mtime + 子项 mtime：未变子树直接从 SQLite 行重建（零 `readDir`），变了才重扫并 `sync_favorite` upsert。
 2. **打开一本书**：路由 `/reading/:id?path=&name=&ext=`，`Reading.vue` 按后缀分派；`read.js` 用 zip.js RangeReader 按需读，CBZ 图片优先走 Rust `read_cbz_entry` 原生解压；同路径 zip loader 单例 + 引用计数 + 60s 空闲释放。
 3. **封面**：id = sha256(规范化路径)（与 DB 主键一致），缓存 `app_data/cover-cache/v5/<id>/cover.jpg` + `index.json`；前端队列（前台 8/后台 3 并发、失败 120s 冷却），批量 IPC 读取。视频封面走 mpv 抓帧（Android 走 MediaMetadataRetriever）。
 4. **进度与标签**：`progress` 按 item_id，500ms debounce 批量 `save_progress_map`；`tags` + `item_tags`（含 `kind` 分组）。搜索为名称 LIKE + 标签命中，系列文件折叠进目录结果。
-5. **视频双后端**：Windows 动态加载 libmpv（播放池 3、抓帧池 2、每实例专用消息泵线程）；Android 走 ExoPlayer 的 Kotlin 插件（`video_*`）。两套命令语义对齐，前端只切前缀。
+5. **视频双后端**：Windows 动态加载 libmpv（播放池 3、抓帧池 2、每实例专用消息泵线程）；Android 走 ExoPlayer 的 Kotlin 插件（`video_*`）。两套命令语义对齐，前端只切前缀。命令层各自收敛样板：`video.rs` 全部命令走 `android_call!`/`mobile_call`，`mpv.rs` 走 `with_player`（`mpv_get_state` 例外：500ms 轮询只读状态缓存，不进 `spawn_blocking`）。
 
 ## 持久化
 
@@ -62,6 +62,6 @@
 1. `src-tauri/src/lib.rs` 的 `generate_handler!` 命令清单 + `src-tauri/migrations/001_init.sql`。
 2. `src/utils/mediaScan.js` 的 mtime 快路径 + `src-tauri/src/sync.rs` 的 `sync_favorite_inner`。
 3. `src/js/read.js` + `src/js/comic-book.js`。
-4. `src/utils/bookData.js` 的封面流水线。
-5. `src/components/VideoPlayer.vue` + `mpv.rs` / `video.rs`。
+4. `src/utils/bookData.js` → `coverCache.js` / `coverExtract.js` 的封面流水线。
+5. `src/components/VideoPlayer.vue` + `src/utils/videoSession.js` + `mpv.rs` / `video.rs`。
 6. `src/components/Reading.vue`。

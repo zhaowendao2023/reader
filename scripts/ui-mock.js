@@ -1,4 +1,4 @@
-﻿// ui-mock.js — Tauri API 模拟，用于在浏览器中验证 UI（仅开发/测试用）
+// ui-mock.js — Tauri API 模拟，用于在浏览器中验证 UI（仅开发/测试用）
 (() => {
   if (window.__TAURI_INTERNALS__) return;
 
@@ -89,12 +89,34 @@
   const callbacks = new Map();
   let cbSeq = 1;
 
+  // ===== 库索引假数据：sync_favorite 写入，list_items 读出 =====
+  // 与 Rust sync.rs 的 items 行保持同名字段（camelCase），Home 的
+  // 「扫描 → 落库 → 读行建视图」链路才能在浏览器里走通。
+  const itemsTable = new Map();
+  const rowOf = (entry) => ({
+    id: entry.pathKey,
+    kind: entry.kind,
+    mediaType: entry.mediaType ?? null,
+    name: entry.name,
+    ext: entry.ext ?? null,
+    pathKey: entry.pathKey,
+    parentPath: entry.parentPath ?? null,
+    folder: entry.folder ?? null,
+    size: entry.size ?? null,
+    mtime: entry.mtime ?? null,
+    extra: entry.extra ?? null,
+    createdAt: 1,
+    updatedAt: 2,
+    matchedTags: [],
+  });
+
   // ===== mpv 假状态：浏览器里也能完整渲染播放器 UI =====
   const mpvState = {
     playing: true,
     paused: false,
     position: 0,
     duration: 342.0,
+    speed: 1,
     path: "",
     codec: "h264",
   };
@@ -105,6 +127,29 @@
       // ===== 业务命令 =====
       case "list_drives":
         return ["F:\\"];
+
+      // ===== 库索引（对应 sync.rs / tags.rs 的命令） =====
+      case "get_favorites":
+        return mockData.favoriteDirs.map((d) => ({ pathKey: normEnd(d.path), name: d.name }));
+      case "add_favorite":
+        mockData.favoriteDirs.push({ path: args.path, name: args.name });
+        return null;
+      case "remove_favorite":
+        mockData.favoriteDirs = mockData.favoriteDirs.filter((d) => normEnd(d.path) !== normEnd(args.path));
+        return null;
+      case "clear_library":
+        itemsTable.clear();
+        return null;
+      case "sync_favorite": {
+        const { favorite, entries = [] } = args;
+        if (favorite) itemsTable.set(favorite.pathKey, rowOf(favorite));
+        for (const e of entries) itemsTable.set(e.pathKey, rowOf(e));
+        return { favorites: 1, entries: entries.length, missing: 0 };
+      }
+      case "list_items":
+        return Array.from(itemsTable.values()).map((r) => JSON.parse(JSON.stringify(r)));
+      case "library_meta":
+        return { synced: itemsTable.size > 0 };
 
       // ===== fs =====
       case "plugin:fs|read_dir": {
@@ -294,6 +339,14 @@
       case "mpv_stop_all":
       case "mpv_release":
         return null;
+      case "mpv_get_volume":
+        return Number(mockData.volume ?? 100);
+      case "mpv_set_volume":
+        mockData.volume = Math.max(0, Math.min(100, Number(args.volume) || 0));
+        return mockData.volume;
+      case "mpv_set_speed":
+        mpvState.speed = Math.max(0.5, Math.min(2, Number(args.speed) || 1));
+        return mpvState.speed;
 
       default:
         console.warn("[mock] unhandled invoke", cmd, args);

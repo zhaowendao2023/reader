@@ -1,18 +1,18 @@
 <script setup>
 import { invoke } from "@tauri-apps/api/core";
 import { Window } from "@tauri-apps/api/window";
-import { readDir } from "@tauri-apps/plugin-fs";
 import { useBooks } from "../store/loadBooks";
 import { useSettings } from "../store/settings";
-import { VIDEO_EXTS, extOf, joinPath } from "../utils/media";
-import { covers, canonKey, dirCache, mediaDirKey, enqueueCover } from "../store/browserCache";
-import { itemId } from "../utils/itemKey";
-import { flushProgress, getVideoProgressEntry, getVideoProgressMap, setVideoProgress } from "../utils/progress";
+import { covers, canonKey } from "../store/browserCache";
+import { flushProgress } from "../utils/progress";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
 import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { enterSystemUIImmersive, exitSystemUIImmersive } from "../utils/systemBar";
+// 播放会话（命令/轮询/续播/音量倍速）与时间格式化都在 videoSession 里，
+// 本组件只保留视图状态：舞台、手势、控制栏、播放列表、全屏。
+import { SPEED_OPTIONS, fmt, useVideoSession } from "../utils/videoSession";
 import Icon from "./Icon.vue";
 
 defineOptions({ name: "VideoPlayer" });
@@ -29,22 +29,13 @@ const vcmd = (name) => (isAndroid.value ? `video_${name}` : `mpv_${name}`);
 
 const stage = ref(null);
 const hole = reactive({ x: 0, y: 0, w: 0, h: 0 });
-const currentFile = ref("");
-const files = ref([]);
-const index = ref(0);
-const state = ref(null);
-const error = ref("");
-const loading = ref(true);
 const playlistOpen = ref(false);
 const chromeVisible = ref(true);
 const fullscreen = ref(false);
 const dragPos = ref(null);
-const volume = ref(100);
 const volumeOpen = ref(false);
 const speedOpen = ref(false);
 const brightness = ref(100);
-const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
-const playbackSpeed = ref(SPEED_OPTIONS.includes(settings.videoPlaybackSpeed) ? settings.videoPlaybackSpeed : 1);
 // 移动端手势：横滑进度、左半屏上下滑亮度、右半屏上下滑音量、长按临时 2×。
 const gesture = reactive({
   active: false,
@@ -71,72 +62,14 @@ const playbackHud = reactive({
   secondary: "",
   hideTimer: null,
 });
-const volumeIcon = computed(() =>
-  volume.value === 0 ? "volume-x" : volume.value < 50 ? "volume-1" : "volume-2"
-);
-const speedLabel = computed(() => `${Number(playbackSpeed.value).toFixed(2).replace(/\.00$/, "").replace(/0$/, "")}×`);
-const { copyPath, revealPath, requestDelete } = useItemActions({
-  onDeleted: async (item) => {
-    const removedKey = canonKey(item.path || item.key);
-    const wasCurrent = canonKey(currentFile.value) === removedKey;
-    const oldIndex = index.value;
-    files.value = files.value.filter((f) => canonKey(f.path) !== removedKey);
-    if (!files.value.length) {
-      currentFile.value = "";
-      state.value = null;
-      await invoke(vcmd("stop"), { id: 0 }).catch(() => {});
-      return;
-    }
-    if (wasCurrent) {
-      index.value = Math.min(oldIndex, files.value.length - 1);
-      await play(files.value[index.value].path);
-    } else if (index.value >= files.value.length) {
-      index.value = files.value.length - 1;
-    }
-  },
-});
+
 let timer = null;
 let idleTimer = null;
 let chromeResizeTimer = null;
-let volumeTimer = null;
 let brightnessTimer = null;
-let volumeSynced = false;
 let stageClickTimer = null;
 let resizeRaf = null;
 let stageObserver = null;
-let alive = true;
-let wasPlaying = false;
-let lastNonZeroVolume = 100;
-let speedCommandChain = Promise.resolve(1);
-
-const RESUME_MIN_SECONDS = 5;
-const RESUME_END_GUARD_SECONDS = 10;
-const SAVE_DELTA_SECONDS = 2;
-let resumeAt = null;
-let resumeFor = null;
-let lastSavedItem = null;
-let lastSavedPos = null;
-const playlistMap = new Map();
-const rebuildPlaylistMap = () => {
-  playlistMap.clear();
-  for (const f of files.value) playlistMap.set(f.path, f);
-};
-watch(files, rebuildPlaylistMap, { immediate: true });
-
-const fileName = computed(() => {
-  const p = currentFile.value;
-  if (!p) return "";
-  return p.split(/[\\/]/).pop() || p;
-});
-
-const seekFill = computed(() => {
-  const dur = state.value?.duration || 0;
-  const pos = dragPos.value ?? state.value?.position ?? 0;
-  if (!dur) return 0;
-  return Math.min(100, Math.max(0, (pos / dur) * 100));
-});
-
-const isPlaylist = computed(() => route.query.playlist === "1");
 
 const showPlaybackHud = ({ type, side = "center", icon = "", primary, secondary = "", hold = false }) => {
   playbackHud.type = type;
@@ -156,17 +89,6 @@ const showPlaybackHud = ({ type, side = "center", icon = "", primary, secondary 
 const hidePlaybackHud = () => {
   clearTimeout(playbackHud.hideTimer);
   playbackHud.visible = false;
-};
-
-// 串行倍速命令，保证“长按刚触发就松手”时恢复命令一定最后执行。
-const invokeSpeed = (speed) => {
-  const target = Math.max(0.5, Math.min(2, Number(speed) || 1));
-  const task = speedCommandChain
-    .catch(() => 1)
-    .then(() => invoke(vcmd("set_speed"), { id: 0, speed: target }))
-    .then((actual) => Math.max(0.5, Math.min(2, Number(actual) || target)));
-  speedCommandChain = task;
-  return task;
 };
 
 const rect = () => {
@@ -197,129 +119,107 @@ const syncHole = () => {
   hole.h = Math.round(r.height);
 };
 
-// itemId 自带路径归一化与 Promise 缓存，不必再本地缓存一层。
-const itemIdOf = (path) => itemId(path);
-
-const currentStateMatches = (s) => {
-  if (!s || typeof s.path !== "string" || !s.path) return false;
-  return canonKey(s.path) === canonKey(currentFile.value);
-};
-
-const saveNow = async () => {
-  const s = state.value;
-  const path = currentFile.value;
-  if (!path || !s || !currentStateMatches(s)) return;
-  if (!s.duration || !Number.isFinite(s.position) || s.position <= 0) return;
-  const id = await itemIdOf(path);
-  if (lastSavedItem === id && lastSavedPos != null && Math.abs(s.position - lastSavedPos) < SAVE_DELTA_SECONDS) return;
-  lastSavedItem = id;
-  lastSavedPos = s.position;
-  await setVideoProgress(id, s.position);
-};
-
-const play = async (path) => {
-  try {
-    wasPlaying = false;
-    lastSavedItem = null;
-    lastSavedPos = null;
-    const id = await itemIdOf(path);
-    const record = await getVideoProgressEntry(id);
-    resumeAt = record && record.position >= RESUME_MIN_SECONDS ? record.position : null;
-    resumeFor = resumeAt != null ? path : null;
-    await invoke(vcmd("play"), { id: 0, path, ...rect() });
-    currentFile.value = path;
-    error.value = "";
-    try {
-      playbackSpeed.value = await invokeSpeed(settings.videoPlaybackSpeed);
-    } catch (speedError) {
-      playbackSpeed.value = 1;
-      error.value = String(speedError);
+/* ===== 自动隐藏控件 ===== */
+// 会话（播放/暂停/音量/倍速）和手势都会唤醒控制栏，因此先于 useVideoSession 定义。
+function pokeChrome() {
+  chromeVisible.value = true;
+  clearTimeout(idleTimer);
+  clearTimeout(chromeResizeTimer);
+  chromeResizeTimer = setTimeout(onResize, 360);
+  idleTimer = setTimeout(() => {
+    if (!playlistOpen.value && !volumeOpen.value && !speedOpen.value) {
+      chromeVisible.value = false;
+      clearTimeout(chromeResizeTimer);
+      chromeResizeTimer = setTimeout(onResize, 360);
     }
-  } catch (e) {
-    resumeAt = null;
-    resumeFor = null;
-    error.value = String(e);
-  }
-};
+  }, 3000);
+}
 
-const loadPath = async (path) => {
-  if (!path) {
-    error.value = "缺少视频路径";
-    loading.value = false;
-    return;
-  }
-  loading.value = true;
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  try {
-    if (isPlaylist.value) {
-      await loadPlaylist(path);
-    } else {
-      files.value = [];
-      index.value = 0;
-      await play(path);
+const session = useVideoSession({
+  vcmd,
+  rect,
+  route,
+  hud: { show: showPlaybackHud },
+  pokeChrome,
+  // 长按临时倍速期间，轮询到的真实倍速不覆盖显示值。
+  isLongPressing: () => gesture.longPressActive,
+  speedSetting: () => settings.videoPlaybackSpeed,
+  saveSpeedSetting: (speed) => settings.setVideoPlaybackSpeed(speed),
+});
+
+const {
+  currentFile,
+  files,
+  index,
+  state,
+  error,
+  loading,
+  volume,
+  playbackSpeed,
+  volumeIcon,
+  speedLabel,
+  isPlaylist,
+  play,
+  loadPath,
+  playIndex,
+  next,
+  prev,
+  poll,
+  togglePause,
+  seekTo,
+  seekBy,
+  saveNow,
+  invokeSpeed,
+  setFixedSpeed,
+  loadVolume,
+  pushVolume,
+  applyVolume,
+  onVolumeInput,
+  adjustVolume,
+  toggleMute,
+} = session;
+
+const { copyPath, revealPath, requestDelete } = useItemActions({
+  onDeleted: async (item) => {
+    const removedKey = canonKey(item.path || item.key);
+    const wasCurrent = canonKey(currentFile.value) === removedKey;
+    const oldIndex = index.value;
+    files.value = files.value.filter((f) => canonKey(f.path) !== removedKey);
+    if (!files.value.length) {
+      currentFile.value = "";
+      state.value = null;
+      await invoke(vcmd("stop"), { id: 0 }).catch(() => {});
+      return;
     }
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    loading.value = false;
-  }
-};
-
-const loadPlaylist = async (dirPath) => {
-  // 复用模块级 dirCache（与 MediaViewer 同一命名空间 key）：
-  // 播放器生命周期内最多 readDir 一次，重复进入同一目录不再整目录重读。
-  const ck = mediaDirKey(dirPath);
-  let raw = dirCache.get(ck);
-  if (!raw) {
-    raw = await readDir(dirPath);
-    dirCache.set(ck, raw);
-  }
-  const list = raw
-    .filter((e) => e.isFile && VIDEO_EXTS.includes(extOf(e.name)))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-    .map((e) => ({ name: e.name, path: joinPath(dirPath, e.name) }));
-  if (!list.length) {
-    error.value = "文件夹里没有视频";
-    return;
-  }
-  files.value = list;
-  // 播放列表行缩略图：后台低优先级提取
-  for (const f of list) enqueueCover(f.path, false, "video");
-  // 若传入的是具体文件，优先从它开始播放
-  const single = route.query.path;
-  const norm = (p) => String(p).replace(/\//g, "\\").toLowerCase();
-  const explicitHit =
-    typeof single === "string" && single ? list.findIndex((f) => norm(f.path) === norm(single)) : -1;
-  let start = 0;
-  if (explicitHit >= 0) {
-    start = explicitHit;
-  } else {
-    const videoProgress = await getVideoProgressMap();
-    const ids = await Promise.all(list.map((f) => itemIdOf(f.path)));
-    let bestIdx = -1;
-    let bestTs = -1;
-    for (let i = 0; i < list.length; i++) {
-      const rec = videoProgress[ids[i]];
-      if (rec && rec.ts > bestTs) {
-        bestTs = rec.ts;
-        bestIdx = i;
-      }
+    if (wasCurrent) {
+      index.value = Math.min(oldIndex, files.value.length - 1);
+      await play(files.value[index.value].path);
+    } else if (index.value >= files.value.length) {
+      index.value = files.value.length - 1;
     }
-    if (bestIdx >= 0) start = bestIdx;
-  }
-  index.value = start;
-  await play(list[start].path);
-};
+  },
+});
 
-const playIndex = async (nextIndex) => {
-  if (!files.value.length) return;
-  await saveNow();
-  index.value = (nextIndex + files.value.length) % files.value.length;
-  await play(files.value[index.value].path);
-};
+const fileName = computed(() => {
+  const p = currentFile.value;
+  if (!p) return "";
+  return p.split(/[\\/]/).pop() || p;
+});
 
-const next = () => playIndex(index.value + 1);
-const prev = () => playIndex(index.value - 1);
+const seekFill = computed(() => {
+  const dur = state.value?.duration || 0;
+  const pos = dragPos.value ?? state.value?.position ?? 0;
+  if (!dur) return 0;
+  return Math.min(100, Math.max(0, (pos / dur) * 100));
+});
+
+// 播放列表行索引：右键/长按命中判断用，与渲染同源。
+const playlistMap = new Map();
+const rebuildPlaylistMap = () => {
+  playlistMap.clear();
+  for (const f of files.value) playlistMap.set(f.path, f);
+};
+watch(files, rebuildPlaylistMap, { immediate: true });
 
 const openPlaylistItemMenu = (file, x, y) => {
   openContextMenu({
@@ -358,176 +258,17 @@ const longPress = useCellLongPress({
   onEmpty: (x, y) => openGenericMenu(x, y),
 });
 
-const poll = async () => {
-  if (!alive) return;
-  try {
-    const s = await invoke(vcmd("get_state"), { id: 0 });
-    state.value = s || null;
-    if (s) {
-      if (!gesture.longPressActive && Number.isFinite(Number(s.speed)) && Number(s.speed) > 0) {
-        playbackSpeed.value = Number(s.speed);
-      }
-      if (s.playing && !s.paused) wasPlaying = true;
-      if (
-        resumeAt != null &&
-        resumeFor === currentFile.value &&
-        currentStateMatches(s) &&
-        s.duration > 0 &&
-        (s.playing || s.paused)
-      ) {
-        const target = resumeAt;
-        resumeAt = null;
-        resumeFor = null;
-        if (target < s.duration - RESUME_END_GUARD_SECONDS) seekTo(target);
-      }
-      if (currentStateMatches(s) && s.duration > 0 && Number.isFinite(s.position) && s.position > 0) {
-        void saveNow();
-      }
-      // 一集播完自动续下一集（仅播放列表模式）
-      if (wasPlaying && !s.playing && !s.paused && files.value.length > 1) {
-        wasPlaying = false;
-        await saveNow();
-        next();
-      }
-    }
-  } catch (e) {
-    error.value = String(e);
-  }
-};
-
-const togglePause = async () => {
-  if (!state.value) return;
-  const paused = !state.value.paused;
-  try {
-    await invoke(vcmd("pause"), { id: 0, paused });
-    state.value = { ...state.value, paused };
-    showPlaybackHud({
-      type: "transport",
-      icon: paused ? "pause" : "play",
-      primary: paused ? "已暂停" : "继续播放",
-    });
-    void saveNow();
-  } catch (e) {
-    error.value = String(e);
-  }
-  pokeChrome();
-};
-
-const seekTo = async (seconds) => {
-  const duration = Number(state.value?.duration) || 0;
-  const target = duration > 0
-    ? Math.max(0, Math.min(duration, Number(seconds) || 0))
-    : Math.max(0, Number(seconds) || 0);
-  try {
-    await invoke(vcmd("seek"), { id: 0, seconds: target });
-    if (state.value) state.value = { ...state.value, position: target };
-    return target;
-  } catch (e) {
-    error.value = String(e);
-    return null;
-  }
-};
-
-const seekBy = async (delta) => {
-  const duration = Number(state.value?.duration) || 0;
-  if (duration <= 0) return;
-  const base = state.value?.position ?? 0;
-  const target = Math.max(0, Math.min(duration, base + delta));
-  const applied = await seekTo(target);
-  if (applied == null) return;
-  showPlaybackHud({
-    type: "seek",
-    icon: delta < 0 ? "skip-back" : "skip-forward",
-    primary: `${delta < 0 ? "快退" : "快进"} ${Math.abs(delta)} 秒`,
-    secondary: `${fmt(target)} / ${fmt(duration)}`,
-  });
-  pokeChrome();
+const chooseSpeed = (speed) => {
+  speedOpen.value = false;
+  setFixedSpeed(speed);
 };
 
 const commitSeek = () => {
   if (dragPos.value != null) {
-    resumeAt = null;
-    resumeFor = null;
     seekTo(dragPos.value);
     dragPos.value = null;
     void saveNow();
   }
-};
-
-const loadVolume = async () => {
-  try {
-    volume.value = await invoke(vcmd("get_volume"), { id: 0 });
-    volumeSynced = true;
-  } catch (e) {
-    error.value = String(e);
-  }
-};
-
-const pushVolume = () => {
-  clearTimeout(volumeTimer);
-  volumeTimer = setTimeout(() => {
-    invoke(vcmd("set_volume"), { id: 0, volume: volume.value }).catch((e) => (error.value = String(e)));
-  }, 30);
-};
-
-const onVolumeInput = (e) => {
-  volume.value = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
-  if (volume.value > 0) lastNonZeroVolume = volume.value;
-  pushVolume();
-  showPlaybackHud({
-    type: "volume",
-    side: "right",
-    icon: volumeIcon.value,
-    primary: `音量 ${volume.value}`,
-  });
-  pokeChrome();
-};
-
-const adjustVolume = async (delta) => {
-  if (!volumeSynced) await loadVolume();
-  volume.value = Math.max(0, Math.min(100, volume.value + delta));
-  if (volume.value > 0) lastNonZeroVolume = volume.value;
-  pushVolume();
-  showPlaybackHud({
-    type: "volume",
-    side: "right",
-    icon: volumeIcon.value,
-    primary: `音量 ${volume.value}`,
-  });
-  pokeChrome();
-};
-
-const toggleMute = async () => {
-  if (!volumeSynced) await loadVolume();
-  if (volume.value > 0) {
-    lastNonZeroVolume = volume.value;
-    volume.value = 0;
-  } else {
-    volume.value = Math.max(1, lastNonZeroVolume || 100);
-  }
-  pushVolume();
-  showPlaybackHud({
-    type: "volume",
-    side: "right",
-    icon: volumeIcon.value,
-    primary: volume.value === 0 ? "已静音" : `音量 ${volume.value}`,
-  });
-  pokeChrome();
-};
-
-const setFixedSpeed = async (speed) => {
-  const previous = playbackSpeed.value;
-  speedOpen.value = false;
-  try {
-    const actual = await invokeSpeed(speed);
-    playbackSpeed.value = actual;
-    settings.setVideoPlaybackSpeed(actual);
-    showPlaybackHud({ type: "speed", primary: `${speedLabel.value} 播放` });
-  } catch (e) {
-    playbackSpeed.value = previous;
-    error.value = String(e);
-  }
-  pokeChrome();
 };
 
 /* ===== 移动端手势：横滑进度 / 纵滑亮度音量 / 长按 2× ===== */
@@ -656,10 +397,8 @@ const onStageTouchMove = (e) => {
     pushBrightness();
     showPlaybackHud({ type: "brightness", side: "left", icon: "sun", primary: `亮度 ${v}` });
   } else {
-    volume.value = v;
-    if (v > 0) lastNonZeroVolume = v;
-    pushVolume();
-    showPlaybackHud({ type: "volume", side: "right", icon: volumeIcon.value, primary: `音量 ${v}` });
+    // 手势音量走会话的 applyVolume，与滚轮/滑杆共用同一套 HUD 与非零值记忆。
+    applyVolume(v, { primary: `音量 ${v}`, quiet: true });
   }
   e.preventDefault();
 };
@@ -670,8 +409,6 @@ const onStageTouchEnd = () => {
   const wasLongPress = gesture.longPressActive;
   stopTemporarySpeed();
   if (gesture.direction === "horizontal" && gesture.previewPosition != null) {
-    resumeAt = null;
-    resumeFor = null;
     const target = gesture.previewPosition;
     dragPos.value = null;
     void seekTo(target).then((applied) => {
@@ -778,7 +515,8 @@ const onStageDblClick = (e) => {
   }
 };
 
-const onResize = () => {
+// 舞台尺寸变化要同步给原生播放器窗口；用 rAF 合并 resize/布局抖动。
+function onResize() {
   if (resizeRaf != null) return;
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = null;
@@ -786,7 +524,7 @@ const onResize = () => {
     if (!currentFile.value) return;
     invoke(vcmd("set_bounds"), { id: 0, ...rect() }).catch((e) => (error.value = String(e)));
   });
-};
+}
 
 const goBack = async () => {
   if (fullscreen.value) {
@@ -828,21 +566,6 @@ const toggleFullscreen = async () => {
   onResize();
   await nextTick();
   setTimeout(onResize, 420);
-};
-
-/* ===== 自动隐藏控件 ===== */
-const pokeChrome = () => {
-  chromeVisible.value = true;
-  clearTimeout(idleTimer);
-  clearTimeout(chromeResizeTimer);
-  chromeResizeTimer = setTimeout(onResize, 360);
-  idleTimer = setTimeout(() => {
-    if (!playlistOpen.value && !volumeOpen.value && !speedOpen.value) {
-      chromeVisible.value = false;
-      clearTimeout(chromeResizeTimer);
-      chromeResizeTimer = setTimeout(onResize, 360);
-    }
-  }, 3000);
 };
 
 // 鼠标移动显示控制条仅桌面有效：Android 触摸的微小移动会触发 pointermove
@@ -913,17 +636,7 @@ const onKey = (e) => {
   }
 };
 
-const fmt = (seconds) => {
-  if (!Number.isFinite(seconds)) return "0:00";
-  const s = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = String(s % 60).padStart(2, "0");
-  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
-};
-
 onMounted(async () => {
-  alive = true;
   enterSystemUIImmersive();
   document.documentElement.classList.add("video-mode");
   appWindow.setBackgroundColor([0, 0, 0, 0]).catch(() => {});
@@ -938,9 +651,7 @@ onMounted(async () => {
   stageObserver = new ResizeObserver(onResize);
   if (stage.value) stageObserver.observe(stage.value);
   pokeChrome();
-  const dir = route.query.dir;
-  const path = route.query.path;
-  await loadPath(typeof path === "string" && path ? (isPlaylist.value && typeof dir === "string" && dir ? dir : path) : "");
+  await session.loadFromQuery();
   onResize();
 });
 
@@ -955,7 +666,7 @@ watch(
 );
 
 onUnmounted(() => {
-  alive = false;
+  session.dispose();
   closeContextMenu();
   exitSystemUIImmersive();
   void (async () => {
@@ -972,7 +683,6 @@ onUnmounted(() => {
   clearInterval(timer);
   clearTimeout(idleTimer);
   clearTimeout(chromeResizeTimer);
-  clearTimeout(volumeTimer);
   clearTimeout(brightnessTimer);
   clearTimeout(stageClickTimer);
   clearLongPressTimer();
@@ -1159,7 +869,7 @@ onUnmounted(() => {
                   :key="speed"
                   class="speed-option mono"
                   :class="{ active: playbackSpeed === speed }"
-                  @click="setFixedSpeed(speed)"
+                  @click="chooseSpeed(speed)"
                 >
                   {{ speed }}×
                 </button>

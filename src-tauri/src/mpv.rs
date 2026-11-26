@@ -912,6 +912,34 @@ pub struct MpvState {
     codec: Option<String>,
 }
 
+/// 在播放池上执行一次命令：取 MpvPool 的 Arc、spawn_blocking 里加锁取槽，
+/// 把 `Option<&mut MpvPlayer>`（None 表示槽位尚未创建）交给闭包。
+///
+/// 命令层原本每个命令都重复这段取槽/加锁/poison 错误转换；集中到一处后，
+/// 槽位是否存在、锁中毒、线程池错误文案只有一份，新增命令不会漏改。
+#[cfg(target_os = "windows")]
+async fn with_player<T, F>(app: &AppHandle, id: usize, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Option<&mut imp::MpvPlayer>) -> Result<T, String> + Send + 'static,
+{
+    // app 只在取值阶段借用；spawn_blocking 要求 'static，因此先 clone 出 Arc，
+    // 闭包不再捕获 AppHandle。
+    let handle = app.state::<MpvPool>().0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = handle
+            .lock()
+            .map_err(|_| "mpv state lock poisoned".to_string())?;
+        let player = guard
+            .get_mut(id)
+            .ok_or_else(|| format!("mpv slot {id} missing"))?
+            .as_mut();
+        f(player)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn mpv_play(
     app: AppHandle,
@@ -980,22 +1008,13 @@ pub async fn mpv_set_bounds(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
+        with_player(&app, id, move |player| {
+            if let Some(player) = player {
                 player.set_bounds(x, y, width, height)?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1008,22 +1027,13 @@ pub async fn mpv_set_bounds(
 pub async fn mpv_pause(app: AppHandle, id: usize, paused: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
+        with_player(&app, id, move |player| {
+            if let Some(player) = player {
                 player.pause(paused)?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1036,22 +1046,13 @@ pub async fn mpv_pause(app: AppHandle, id: usize, paused: bool) -> Result<(), St
 pub async fn mpv_seek(app: AppHandle, id: usize, seconds: f64) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
+        with_player(&app, id, move |player| {
+            if let Some(player) = player {
                 player.seek(seconds)?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1064,23 +1065,13 @@ pub async fn mpv_seek(app: AppHandle, id: usize, seconds: f64) -> Result<(), Str
 pub async fn mpv_get_volume(app: AppHandle, id: usize) -> Result<f64, String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
-                Ok(player.volume())
-            } else {
-                Ok(100.0)
-            }
+        with_player(&app, id, |player| {
+            Ok(match player {
+                Some(player) => player.volume(),
+                None => 100.0,
+            })
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1093,23 +1084,12 @@ pub async fn mpv_get_volume(app: AppHandle, id: usize) -> Result<f64, String> {
 pub async fn mpv_set_volume(app: AppHandle, id: usize, volume: f64) -> Result<f64, String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
-                Ok(player.set_volume(volume)?)
-            } else {
-                Ok(100.0)
-            }
+        with_player(&app, id, move |player| match player {
+            Some(player) => player.set_volume(volume),
+            // 原实现槽位未创建时也返回 100.0（而不是传入的 volume）。
+            None => Ok(100.0),
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1122,23 +1102,11 @@ pub async fn mpv_set_volume(app: AppHandle, id: usize, volume: f64) -> Result<f6
 pub async fn mpv_set_speed(app: AppHandle, id: usize, speed: f64) -> Result<f64, String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
-                player.set_speed(speed)
-            } else {
-                Ok(1.0)
-            }
+        with_player(&app, id, move |player| match player {
+            Some(player) => player.set_speed(speed),
+            None => Ok(1.0),
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1151,22 +1119,13 @@ pub async fn mpv_set_speed(app: AppHandle, id: usize, speed: f64) -> Result<f64,
 pub async fn mpv_stop(app: AppHandle, id: usize) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
+        with_player(&app, id, |player| {
+            if let Some(player) = player {
                 player.stop()?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| e.to_string())?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1203,6 +1162,9 @@ pub async fn mpv_stop_all(app: AppHandle) -> Result<(), String> {
 pub async fn mpv_release(app: AppHandle, id: usize) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        // release 要把整个槽位置 None 让 MpvPlayer drop（销毁泵线程/子窗口），
+        // 而 with_player 只交出 Option<&mut MpvPlayer>、无法清槽，因此这里保留
+        // 独立的取槽逻辑：槽位越界按原来的无操作语义直接 Ok(())，不报 missing。
         let handle = app.state::<MpvPool>().0.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let mut guard = handle
@@ -1227,10 +1189,11 @@ pub async fn mpv_release(app: AppHandle, id: usize) -> Result<(), String> {
 pub async fn mpv_get_state(app: AppHandle, id: usize) -> Result<MpvState, String> {
     #[cfg(target_os = "windows")]
     {
+        // 这条命令刻意不进 with_player：前端 500ms 轮询，而 with_player 会把调用
+        // 丢给 spawn_blocking 的阻塞线程池。这里只读泵线程维护的状态缓存快照
+        // （临界区仅克隆几个小字符串，微秒级），不必占阻塞线程、也不与其它命令
+        // 在泵线程上串行。代价是与其它命令的加锁/取槽样板各写一遍。
         let handle = app.state::<MpvPool>().0.clone();
-        // 读泵线程维护的状态缓存快照：临界区只克隆几个小字符串（微秒级），
-        // 不再 spawn_blocking 占阻塞线程、不再做泵线程往返。500ms 轮询不再
-        // 与其它 mpv 命令串行争池锁（play/seek 等仍走 spawn_blocking 泵线程）。
         let guard = handle
             .lock()
             .map_err(|_| "mpv state lock poisoned".to_string())?;
