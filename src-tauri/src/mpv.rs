@@ -151,10 +151,6 @@ mod imp {
                 return Ok(candidate);
             }
         }
-        let dev_fallback = PathBuf::from("E:\\develop\\mpv-dev\\libmpv-2.dll");
-        if dev_fallback.exists() {
-            return Ok(dev_fallback);
-        }
         Err("libmpv-2.dll not found; copy it next to reader.exe or set READER_MPV_DLL".to_string())
     }
 
@@ -1554,7 +1550,12 @@ mod tests {
     }
 
     fn mpv_dll() -> bool {
-        std::path::Path::new("E:\\develop\\mpv-dev\\libmpv-2.dll").exists()
+        std::env::var_os("READER_MPV_DLL")
+            .map(|p| std::path::Path::new(&p).exists())
+            .unwrap_or(false)
+            || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("libmpv-2.dll")
+                .exists()
     }
 
     // The parent window is owned by the test thread. mpv's pump thread creates

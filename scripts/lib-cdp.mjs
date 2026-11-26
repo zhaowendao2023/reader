@@ -1,11 +1,22 @@
 // lib-cdp.mjs — 无依赖 CDP 驱动公共模块（裸 socket WebSocket + Chrome 启动）
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import net from "node:net";
 import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 
-export const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+// Chrome 路径不再写死：优先环境变量，其次常见安装位置；都找不到就明确报错。
+const CHROME_CANDIDATES = [
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/usr/bin/google-chrome",
+];
+export const CHROME = process.env.CHROME_PATH || CHROME_CANDIDATES.find((p) => existsSync(p)) || "";
+if (!CHROME) {
+  throw new Error("未找到 Chrome：请设置 CHROME_PATH 指向 chrome 可执行文件");
+}
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function wsConnect(url) {

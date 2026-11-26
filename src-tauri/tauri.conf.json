@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.tauri-app.reader",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -16,8 +16,7 @@
         "width": 1080,
         "height": 720,
         "decorations": false,
-        "transparent": true,
-        "additionalBrowserArgs": "--remote-debugging-port=9222"
+        "transparent": true
       }
     ],
     "security": {

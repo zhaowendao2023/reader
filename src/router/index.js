@@ -37,11 +37,14 @@ const routes = [
     name: 'Reading',
     component: () => import('@/components/Reading.vue') // 阅读组件
   },
-  {
-    path: '/mpv-test',
-    name: 'MpvTest',
-    component: () => import('@/components/MpvTest.vue')
-  },
+  // 开发诊断页：只在 dev 构建注册，release 包不暴露 /mpv-test
+  ...(import.meta.env.DEV
+    ? [{
+      path: '/mpv-test',
+      name: 'MpvTest',
+      component: () => import('@/components/MpvTest.vue')
+    }]
+    : []),
   {
     path: '/video/:id',
     name: 'VideoPlayer',

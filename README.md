@@ -4,6 +4,16 @@
 
 目前支持 cbz, zip, epub, mobi
 
+## 包管理器（pnpm）
+
+仓库统一使用 pnpm，锁文件只有 `pnpm-lock.yaml`（`package-lock.json` 已移除）。
+
+```powershell
+pnpm install
+```
+
+> Windows 下若 `pnpm.ps1` 被执行策略拦截，用 `pnpm.cmd`，或先执行 `corepack enable`。
+
 ## 设计系统
 
 - 图标：统一使用 Lucide 线性图标（见 `src/components/Icon.vue`），界面不使用表情符号。
@@ -14,7 +24,7 @@
 
 不启动 Tauri 也能在浏览器里预览/调试界面：
 
-1. `npm run dev` 启动 Vite（端口 1420）。
+1. `pnpm dev` 启动 Vite（端口 1420）。
 2. 打开 `http://localhost:1420/ui-test.html`。
 
 `ui-test.html` 会先注入 `scripts/ui-mock.js`（模拟 Tauri 的 fs / store / dialog / window 等 API），
@@ -26,14 +36,18 @@
 桌面窗口测试直接运行：
 
 ```powershell
-npm run tauri dev *> tauri-dev.log 2>&1
+pnpm tauri dev *> tauri-dev.log 2>&1
 ```
 
 窗口加载 `http://localhost:1420`。如果日志里 Vite 已就绪、Cargo 也编译完成，但窗口始终不出现，按下面的问题排查。
 
+- **视频需要 libmpv**：Windows 端把 `libmpv-2.dll` 放到 `reader.exe` 同目录，或设置 `READER_MPV_DLL` 指向它；缺失时视频与视频封面不可用。
+- **需要 CDP 调试端口时**用 `scripts/dev-launch.ps1`：它会临时给 `tauri.conf.json` 注入 `--remote-debugging-port=9222`，退出后自动还原。仓库里的配置**不再保留**调试端口。
+- **Android**：需要本地生成 `src-tauri/gen/android` 工程与 Kotlin 插件；这部分不在版本库内，详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
 ### 残留 Vite 占住 1420 端口
 
-`vite.config.js` 里 `server.strictPort` 为 `true`，所以只要之前有独立的 `npm run dev`（例如浏览器预览）没有退出，新的 `tauri dev` 就绑不上 1420，窗口不会弹出。
+`vite.config.js` 里 `server.strictPort` 为 `true`，所以只要之前有独立的 `pnpm dev`（例如浏览器预览）没有退出，新的 `tauri dev` 就绑不上 1420，窗口不会弹出。
 
 排查：
 
@@ -60,7 +74,7 @@ Rename-Item tauri-dev.log tauri-dev.log.old
 
 1. 结束占住 1420 端口的残留进程树。
 2. 释放被占用的 `tauri-dev.log`（改名或删除）。
-3. 重新执行 `npm run tauri dev *> tauri-dev.log 2>&1`。
+3. 重新执行 `pnpm tauri dev *> tauri-dev.log 2>&1`。
 4. 看到 `Running target\debug\reader.exe` 后，主窗口应已显示。
 
 ## 给 Agent / 新开发者的入口
@@ -72,11 +86,11 @@ Rename-Item tauri-dev.log tauri-dev.log.old
 
 完整指南（三种路径、标准流程、全部踩坑与脚本用法）见 **[`docs/TESTING.md`](docs/TESTING.md)**，速览：
 
-- **浏览器 mock 预览**（布局走查）：`npm run dev` → `http://localhost:1420/ui-test.html`（`scripts/ui-mock.js` 模拟 Tauri API + `scripts/testbook*.cbz` 测试书）。
-- **编译验证**：`node node_modules/vite/bin/vite.js build`（沙箱下 `npm` 包装脚本有坑，绕过方式见指南）。
-- **真实窗口 + CDP 驱动**（交互/状态类 bug 主路径，滑块修复即用此验证）：启动前临时在 `src-tauri/tauri.conf.json` 的 `app.windows[0]` 加 `"additionalBrowserArgs": "--remote-debugging-port=9222 --remote-allow-origins=*"`，然后 `node node_modules/@tauri-apps/cli/tauri.js dev`，用 `scripts/cdp-drive.mjs` / `cdp-verify.mjs` 驱动与断言。
+- **浏览器 mock 预览**（布局走查）：`pnpm dev` → `http://localhost:1420/ui-test.html`（`scripts/ui-mock.js` 模拟 Tauri API + `scripts/testbook*.cbz` 测试书）。
+- **编译验证**：`pnpm exec vite build`。
+- **真实窗口 + CDP 驱动**（交互/状态类 bug 主路径）：直接运行 `scripts/dev-launch.ps1`。它会在启动前临时注入 `additionalBrowserArgs`（`--remote-debugging-port=9222 --remote-allow-origins=*`）、启动 `pnpm tauri dev`，退出后按字节还原配置，并清理残留 dev 进程链。之后用 `scripts/lib-cdp.mjs` / `scripts/cdp-shot.mjs` / `scripts/verify-dom.mjs` 驱动与断言。
 
-> ⚠️ **两个必记的坑**：① `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量在本项目**无效**（wry 显式覆盖），只有 `tauri.conf.json` 的 `additionalBrowserArgs` 生效；② 该配置**测试后必须还原**，否则 release 包会带调试端口。
+> ⚠️ **两个必记的坑**：① `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量在本项目**无效**（wry 显式覆盖），只有 `tauri.conf.json` 的 `additionalBrowserArgs` 生效，而该字段现在只由 `scripts/dev-launch.ps1` 临时注入；② 不要把调试端口手工写回 `tauri.conf.json`，否则 release 包会带 9222。
 
 ## 待实现
 

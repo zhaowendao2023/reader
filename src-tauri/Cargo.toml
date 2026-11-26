@@ -1,8 +1,8 @@
 [package]
 name = "reader"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "本地漫画、电子书与影视图集阅读器"
+authors = ["reader contributors"]
 edition = "2021"
 default-run = "reader"
 
