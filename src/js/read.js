@@ -6,6 +6,7 @@ import { makeComicBook } from "./comic-book.js"
 import { basename, extname } from "@tauri-apps/api/path"
 import { recordTiming } from "../utils/coverTiming"
 import { canonKey } from "../utils/itemKey"
+import { mimeForImage } from "../utils/media"
 
 // 按需读取文件局部内容的 Reader：zip.js 只在需要时才通过
 // FileHandle 读取对应字节段，避免把整个压缩包一次性传到前端。
@@ -48,21 +49,6 @@ const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.
 const isImageName = name => {
   const lower = name.toLowerCase()
   return IMAGE_EXTS.some(ext => lower.endsWith(ext))
-}
-
-const mimeForImage = name => {
-  const ext = name.toLowerCase().split('.').pop()
-  return {
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    gif: 'image/gif',
-    bmp: 'image/bmp',
-    webp: 'image/webp',
-    svg: 'image/svg+xml',
-    jxl: 'image/jxl',
-    avif: 'image/avif',
-  }[ext] || ''
 }
 
 // Tauri IPC 的二进制返回值在不同 WebView/版本中可能是 Uint8Array、

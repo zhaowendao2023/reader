@@ -352,7 +352,7 @@ const openEntryMenu = (entry, x, y) => {
       isDir: entry.isDir,
       actions: { copyPath, editTags, revealPath, requestDelete },
       // 只有收藏夹内的条目才有标签身份，目录外的文件不显示「编辑标签」
-      showTags: !isInsideFavorite(entry.key),
+      showTags: isInsideFavorite(entry.key),
       open: {
         label: entry.isDir ? "打开文件夹" : "打开",
         icon: entry.isDir ? "folder" : entryIcon(entry),

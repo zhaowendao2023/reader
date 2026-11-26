@@ -5,12 +5,11 @@
 // 混在一起时改缓存版本号会牵动所有提取分支。
 import { readFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
-import { isImage, isVideo, joinPath, extOf } from './media';
+import { isImage, isVideo, joinPath, extOf, mimeForImage } from './media';
 import { byName } from './libraryView';
 import { workerDownscale } from './coverWorkerPool';
 import {
   THUMB_MAX_EDGE,
-  mimeForImage,
   readDiskCoverBlob,
   seedCover,
 } from './coverCache';

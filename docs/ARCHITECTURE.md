@@ -53,7 +53,7 @@
 ## 已知工程风险
 
 1. `src-tauri/tauri.conf.json` 不再保留调试端口；CDP 调试必须走 `scripts/dev-launch.ps1`（临时注入、退出还原）。
-2. `assetProtocol.scope.allow` 仍含 `"**"`，`capabilities/default.json` 是 `fs:read-all`/`write-all` + scope `"**"`，CSP 白名单偏宽（含模板残留域名）。
+2. `assetProtocol.scope.allow` 仍含 `"**"`，`capabilities/default.json` 是 `fs:read-all`/`write-all` + scope `"**"`（本地媒体库需要宽文件访问，但尚未按收藏根目录收窄）；CSP 里的第三方模板域名已清除，`img-src https://*` 与 `script-src 'unsafe-eval'` 仍在。
 3. 无 CI；回归靠 `scripts/` 下的 CDP 脚本与人工走查。Rust 侧有单元测试（`cargo test`）。
 4. 封面缓存无容量上限；EPUB/MOBI 未做虚拟化；跨会话无 zip/spine 缓存。
 

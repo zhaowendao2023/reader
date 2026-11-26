@@ -90,8 +90,8 @@ const init = async () => {
     error.value = String(e);
   } finally {
     loading.value = false;
-    // 数据就绪后再建立封面观察：可视区卡片/行走前台优先级（6 并发），
-    // 其余由 prefetch 后台预热（2 并发），避免整包全量后台慢磨。
+    // 数据就绪后再建立封面观察：可视区卡片/行走前台优先级（8 并发），
+    // 其余由 prefetch 后台预热（3 并发），避免整包全量后台慢磨。
     observeCovers();
     // 数据就绪后恢复滚动位置（列表异步渲染，需等 DOM 出现）
     await restorePackScroll();
@@ -148,8 +148,8 @@ const dropDeletedFromView = (item, path) => {
 };
 
 // 封面懒加载：与 Home/Display/FileBrowser 同一套 IntersectionObserver。
-// 可视区（+300px 预取）卡片/行走前台优先级 enqueueCover（6 并发），
-// 其余在 prefetch 里后台批量预热（2 并发）——进包时第一屏封面秒出，
+// 可视区（+300px 预取）卡片/行走前台优先级 enqueueCover（8 并发），
+// 其余在 prefetch 里后台批量预热（3 并发）——进包时第一屏封面秒出，
 // 滚动到哪加载到哪，不用等整包全量提取完。
 const lazyCovers = useLazyCovers({
   selector: ".pack-page .pack-card, .pack-page .pack-row",

@@ -12,7 +12,7 @@ import {
 } from "../store/browserCache";
 import { itemId } from "./itemKey";
 import { deleteFileData } from "./bookData";
-import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "./mediaScan";
+import { scanAndSyncFavorite } from "./mediaScan";
 import {
   closeContextMenu,
   requestConfirm,
@@ -67,12 +67,8 @@ const refreshLibraryForDelete = async (path) => {
       continue;
     }
     try {
-      const result = await scanFavoriteTree(dir.path, dir.name);
-      // dirty=false（目录 mtime 未变）时磁盘与索引一致，跳过写库
-      if (result.dirty) {
-        const entries = flattenScan(result, dir);
-        await syncFavoriteToDb(dir, entries);
-      }
+      // 目录 mtime 未变（dirty=false）时 scanAndSyncFavorite 内部跳过写库
+      await scanAndSyncFavorite(dir);
     } catch (error) {
       console.error("rescan favorite failed:", dir.path, error);
     }

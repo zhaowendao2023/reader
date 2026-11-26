@@ -92,6 +92,9 @@ onUnmounted(() => {
       />
       <EpubReading v-else-if="bookInfo && bookInfo.ext.endsWith('epub')" ref="containerRef" />
       <MobiReading v-else-if="bookInfo && bookInfo.ext.endsWith('mobi')" ref="containerRef" />
+      <div v-else class="reader-unsupported">
+        不支持的书籍格式：{{ bookInfo?.ext ? "." + bookInfo.ext : "未识别" }}
+      </div>
     </div>
     <BottomDrawer />
   </div>
@@ -108,6 +111,16 @@ onUnmounted(() => {
 
 .reader-stage {
   display: contents;
+}
+
+.reader-unsupported {
+  display: flex;
+  height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-size: 14px;
+  color: var(--text-2, #a1a1aa);
 }
 
 .reader-drag {

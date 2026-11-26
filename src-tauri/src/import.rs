@@ -156,6 +156,9 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join(format!("import_test_{name}_{}", std::process::id()));
+        // 目录按 pid 命名，而进程号会被系统复用：上一次运行留下的同名目录里
+        // 已有 test.db，复用时 open_db 再执行 001_init.sql 会 "table items already exists"。
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -214,9 +214,8 @@ export const useVideoSession = ({
     for (const f of list) enqueueCover(f.path, false, "video");
     // 若传入的是具体文件，优先从它开始播放
     const single = route.query.path;
-    const norm = (p) => String(p).replace(/\//g, "\\").toLowerCase();
-    const explicitHit =
-      typeof single === "string" && single ? list.findIndex((f) => norm(f.path) === norm(single)) : -1;
+    const target = typeof single === "string" && single ? canonKey(single) : "";
+    const explicitHit = target ? list.findIndex((f) => canonKey(f.path) === target) : -1;
     let start = 0;
     if (explicitHit >= 0) {
       start = explicitHit;
@@ -390,6 +389,7 @@ export const useVideoSession = ({
     isPlaylist,
     loadFromQuery,
     loadPath,
+    play,
     playIndex,
     next,
     prev,

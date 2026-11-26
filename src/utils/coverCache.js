@@ -45,19 +45,6 @@ const JPEG_QUALITY = 0.85
 export const coverCache = new Map()
 export const coverPending = new Map()
 
-export const mimeForImage = (name) => {
-  const ext = String(name).toLowerCase().split(".").pop()
-  return {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp",
-    gif: "image/gif",
-    bmp: "image/bmp",
-    svg: "image/svg+xml",
-  }[ext] || ""
-}
-
 // 封面 id 与 items.id 同源（itemId 内含路径归一化与 Promise 缓存）。
 const getCoverId = async (path) => itemId(path)
 const coverDirFor = (id) => `${COVER_ROOT}/${id}`
@@ -442,8 +429,7 @@ export const cleanupLegacyCoverCache = async () => {
       if (await exists(LEGACY_COVER_DIR, { baseDir })) {
         await remove(LEGACY_COVER_DIR, { baseDir, recursive: true })
       }
-      // v2 缓存（400px 长边）在升到 v3（800px）后作废：文件与
-      // index.json（version 字段不匹配会被丢弃）都无效，直接清掉避免残留。
+      // v2 目录名固定、与当前 manifest 无关，直接删；v3/v4 由下方版本号判断清理。
       if (await exists(LEGACY_V2_COVER_DIR, { baseDir })) {
         await remove(LEGACY_V2_COVER_DIR, { baseDir, recursive: true })
       }

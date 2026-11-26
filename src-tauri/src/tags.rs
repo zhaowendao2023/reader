@@ -207,7 +207,10 @@ pub fn set_item_tags_inner(
             params![path_key],
             |r| r.get(0),
         )
-        .map_err(|_| "条目不在库中，无法打标签".to_string())?;
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => "条目不在库中，无法打标签".to_string(),
+            other => other.to_string(),
+        })?;
 
     // Normalize + dedupe case-insensitively.
     let mut names: Vec<String> = Vec::new();

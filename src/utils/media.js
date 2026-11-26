@@ -38,6 +38,7 @@ export const joinPath = (base, name) => {
   return base.endsWith(sep) ? base + name : base + sep + name;
 };
 
+// 图片 MIME 的唯一来源：看图器、封面提取、阅读器里的漫画页都走这里。
 export const mimeForImage = (name) => {
   const ext = extOf(name);
   return {
@@ -47,6 +48,8 @@ export const mimeForImage = (name) => {
     webp: "image/webp",
     gif: "image/gif",
     bmp: "image/bmp",
+    jxl: "image/jxl",
+    avif: "image/avif",
     svg: "image/svg+xml",
   }[ext] || "";
 };

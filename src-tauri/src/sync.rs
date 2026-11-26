@@ -404,7 +404,11 @@ pub fn save_progress_map_inner(
         );
         match res {
             Ok(_) => saved += 1,
-            Err(_) => { /* item missing: skip */ }
+            // 条目已被删除时外键约束失败，跳过是预期行为；其他写入错误必须暴露，
+            // 否则进度会静默丢失、调用方却以为已保存。
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation => {}
+            Err(e) => return Err(e.to_string()),
         }
     }
     Ok(saved)

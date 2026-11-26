@@ -46,15 +46,17 @@ export const openVideo = async (item, { dir, playlist = false, back, q } = {}) =
   });
 };
 
-// 图片 → 看图器。单张图片用 path；图包/系列目录用 dir + path 列出并定位。
+// 图片 → 看图器。图包/系列目录用 dir + path 列出并定位。
+// 单张图片可与所在目录一起传：扫描结果里的文件条目没有 kind，只能靠调用方的 dir
+// 告诉看图器「目录上下文在这里」，否则会把图片文件本身当成目录去 readDir。
 export const openImage = async (item, { dir, back, q } = {}) => {
   const key = canonKey(pathOf(item));
   const id = await itemId(key);
   const p = pathOf(item);
-  const single = item.kind === "image";
+  const contextDir = dir || (item.kind === "image" ? "" : p);
   return navTo(`/media/${id}`, {
-    ...(single ? { path: p } : { dir: p, path: p }),
-    ...(single && dir ? { dir } : {}),
+    path: p,
+    ...(contextDir ? { dir: contextDir } : {}),
     name: item.name,
     ...backQuery({ back, q }),
   });
