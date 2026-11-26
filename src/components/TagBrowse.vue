@@ -7,20 +7,18 @@ import { useSettings } from "../store/settings";
 import { covers } from "../store/browserCache";
 import { tagColor, hexToRgba } from "../utils/tagColor";
 import { openSearchItem } from "../utils/open";
-import {
-  closeContextMenu,
-  openContextMenu,
-  openGenericMenu,
-  requestConfirm,
-} from "../utils/contextMenu";
+import { closeContextMenu, openContextMenu, openGenericMenu, requestConfirm } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { useLazyCovers } from "../utils/lazyCovers";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
+import { byName, kindOfRow, nodeShape } from "../utils/libraryView";
 import { TAG_KINDS, TAG_KIND_ORDER, kindLabel, inferTagKind } from "../utils/tagKind";
 import Icon from "./Icon.vue";
 import MediaCover from "./MediaCover.vue";
+import BookCover from "./BookCover.vue";
 
 defineOptions({ name: "TagBrowse" });
 
@@ -42,7 +40,6 @@ const previewTag = ref(null); // 未筛选时，展示“精选”最高频标�
 let lastPreviewAt = 0;
 
 const entering = entranceActive("tags");
-const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
 
 /* ===== 标签云派生 ===== */
 const sortedTags = computed(() =>
@@ -189,33 +186,6 @@ const clearSelection = () => {
 const resultsVisible = computed(() => selectedTags.value.length > 0 || !!previewTag.value);
 
 /* ===== 结果分组（与搜索页同款三段式） ===== */
-const extraOf = (row) => row.extra || {};
-
-const nodeShape = (row, favName, kind, ext) => ({
-  name: row.name,
-  key: row.pathKey,
-  path: row.pathKey,
-  dir: row.parentPath || row.pathKey,
-  folder: favName,
-  kind,
-  ext,
-  count: extraOf(row).count ?? 0,
-  videoCount: extraOf(row).videoCount ?? 0,
-  imageCount: extraOf(row).imageCount ?? 0,
-  childCount: extraOf(row).childCount ?? 0,
-  children: [],
-  files: [],
-});
-
-const kindOfRow = (row) =>
-  row.kind === "group"
-    ? { kind: "group", ext: "group" }
-    : row.mediaType === "video"
-      ? { kind: "video-folder", ext: "video" }
-      : row.mediaType === "image"
-        ? { kind: "image-folder", ext: "image" }
-        : { kind: "media-folder", ext: "media" };
-
 const tagComics = computed(() =>
   items.value
     .filter((r) => r.kind === "comic")
@@ -378,26 +348,17 @@ const rebuildItemMap = () => {
 watch(items, rebuildItemMap, { immediate: true });
 
 const openItemMenu = (item, x, y) => {
+  // 标签结果页只保留「打开 / 编辑标签」：这里是按标签聚合的只读结果区，
+  // 复制/定位/删除统一回各自主页面处理。
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
-        label: "打开",
-        icon: "book-open",
-        onSelect: () => {
-          closeContextMenu();
-          openTagItem(item);
-        },
-      },
-      {
-        id: "tags",
-        label: "编辑标签",
-        icon: "tag",
-        onSelect: () => editTags(item),
-      },
-    ],
+    items: buildItemMenu({
+      item,
+      actions: { editTags },
+      show: { copy: false, reveal: false, delete: false },
+      open: { icon: "book-open", onOpen: () => openTagItem(item) },
+    }),
   });
 };
 
@@ -674,21 +635,14 @@ onUnmounted(() => {
                 :data-key="book.key"
                 @click="longPress.onCellClick(() => openTagItem(book))"
               >
-                <div class="book-cover" :data-key="book.key" data-kind="comic">
-                  <img
-                    v-if="covers[book.key]"
-                    :src="covers[book.key]"
-                    class="book-cover-img"
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                  />
-                  <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
-                  <template v-if="settings.showSource">
-                    <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
-                    <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
-                  </template>
-                </div>
+                <BookCover
+                  :src="covers[book.key]"
+                  :ext="book.ext"
+                  :folder="book.folder"
+                  :meta="settings.showSource"
+                  :data-key="book.key"
+                  data-kind="comic"
+                />
                 <div class="book-name">
                   <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
                 </div>
@@ -1442,67 +1396,6 @@ onUnmounted(() => {
   contain-intrinsic-size: auto 300px;
 }
 
-.book-cover {
-  position: relative;
-  aspect-ratio: 1 / 1.414;
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-1);
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
-  display: grid;
-  place-items: center;
-}
-
-.book-cell:hover .book-cover {
-  transform: translateY(-6px) scale(1.02);
-  box-shadow: var(--shadow-2);
-}
-
-.book-cover-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.book-cover-ph {
-  color: var(--text-3);
-  display: grid;
-  place-items: center;
-}
-
-.book-ext {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  backdrop-filter: blur(6px);
-}
-
-.book-folder {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: 55%;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  backdrop-filter: blur(6px);
-}
-
 .book-name {
   font-size: 12.5px;
   color: var(--text-2);
@@ -1837,7 +1730,6 @@ onUnmounted(() => {
   }
 
   .tag-chip:hover,
-  .book-cell:hover .book-cover,
   .file-hit:hover {
     transform: none;
   }
@@ -1891,7 +1783,6 @@ onUnmounted(() => {
 @media (hover: none) {
   .sel-mini:hover,
   .tag-chip:hover,
-  .book-cell:hover .book-cover,
   .file-hit:hover,
   .first-empty-btn:hover {
     transform: none;

@@ -6,6 +6,7 @@ import { isImage, isVideo, joinPath, extOf } from './media';
 import { workerDownscale } from './coverWorkerPool';
 import { recordTiming, maybeFlushTiming } from './coverTiming';
 import { canonKey, itemId } from './itemKey';
+import { byName as byNameMedia } from './libraryView';
 
 export const getBookInfo = async (path) => {
   const ext = await extname(path)
@@ -40,7 +41,6 @@ const JPEG_QUALITY = 0.85
 const COLLAGE_DEPTH_LIMIT = 4
 const COLLAGE_VISIT_LIMIT = 64
 
-const byNameMedia = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
 const mimeForImage = (name) => {
   const ext = String(name).toLowerCase().split(".").pop()
   return {

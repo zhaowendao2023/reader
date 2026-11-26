@@ -17,9 +17,9 @@
 |---|---|
 | `src/main.js` | 应用入口；Android 返回键路由栈逻辑 |
 | `src/router/index.js` | 路由表 |
-| `src/components/` | 视图与交互：`LayOut`（外壳/导航）、`Home`（全量聚合）、`Display`（收藏分组）、`FileBrowser`、`SearchPage`、`TagBrowse`、`Settings`、`ComicReading`/`EpubReading`/`MobiReading`、`VideoPlayer`、`MediaViewer`、`MediaPack` |
+| `src/components/` | 视图与交互：`LayOut`（外壳/导航）、`Home`（全量聚合）、`Display`（收藏分组）、`FileBrowser`、`SearchPage`、`TagBrowse`、`Settings`、`ComicReading`/`EpubReading`/`MobiReading`、`VideoPlayer`、`MediaViewer`、`MediaPack`；`BookCover`/`MediaCover` 是列表页共用的封面卡 |
 | `src/js/` | 格式解析：`read.js`（打开入口）、`comic-book.js`、`epub.js`、`mobi.js`；`vendor/fflate.js` 供 MOBI 解压 |
-| `src/utils/` | 数据与性能：`itemKey.js`（路径 key 与 `items.id` 的唯一入口）、`bookData.js`（封面缓存/提取）、`mediaScan.js`（扫描 + 索引）、`progress.js`、`itemActions.js` |
+| `src/utils/` | 数据与性能：`itemKey.js`（路径 key 与 `items.id` 的唯一入口）、`libraryView.js`（`ItemRow` → 卡片节点/排序）、`open.js`（打开条目的路由入口）、`itemMenu.js`（右键/长按菜单）、`bookData.js`（封面缓存/提取）、`mediaScan.js`（扫描 + 索引）、`progress.js`、`itemActions.js` |
 | `src/store/` | Pinia：`loadBooks`（书库/收藏夹/主题）、`settings`（偏好）、`tags`、`browserCache`（目录/封面/滚动缓存） |
 | `src-tauri/src/` | `lib.rs`（命令注册）、`db.rs`（SQLite 与迁移）、`sync.rs`（索引/搜索）、`tags.rs`、`mpv.rs`（Windows 播放）、`video.rs`（Android 桥接）、`import.rs`（旧 `store.bin` 迁移）、`paths.rs` |
 | `src-tauri/migrations/` | 迁移 SQL：items/progress（v1）、tags（v3）、tag kind（v4） |

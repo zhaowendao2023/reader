@@ -7,9 +7,30 @@ use tauri::{AppHandle, Manager};
 use crate::paths::now_ms;
 
 pub struct AppDb {
-    // Backing connection for all upcoming DB commands.
-    #[allow(dead_code)]
     pub conn: Mutex<Connection>,
+}
+
+/// 在一条连接上执行一段 DB 操作：命令层不再各写锁/错误映射样板。
+pub fn with_conn<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    f(&conn)
+}
+
+/// 写事务版本：批量写入要么全部生效，要么整体回滚。
+pub fn with_tx<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let db = app.state::<AppDb>();
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let out = f(&tx)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 impl AppDb {

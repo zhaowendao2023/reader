@@ -2,10 +2,20 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-use crate::db::AppDb;
+use crate::db::{with_conn, with_tx};
 use crate::paths::{canon_key, hash_hex, now_ms};
+
+/// 各搜索入口统一的默认条数与硬上限；只允许在这里调整。
+pub(crate) const QUERY_LIMIT_DEFAULT: i64 = 60;
+pub(crate) const QUERY_LIMIT_MAX: i64 = 200;
+
+pub(crate) fn clamp_query_limit(limit: Option<i64>) -> i64 {
+    limit
+        .unwrap_or(QUERY_LIMIT_DEFAULT)
+        .clamp(1, QUERY_LIMIT_MAX)
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +143,39 @@ pub(crate) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRow> 
 pub(crate) const ITEM_COLUMNS: &str =
     "id, kind, media_type, name, ext, path_key, parent_path, folder, size, mtime, extra, created_at, updated_at";
 
+/// 给命中的单文件视频/图片补上父目录行，让前端能把散文件折叠进所在目录。
+///
+/// 名称搜索与标签筛选的命中条件不同，父目录查询 SQL 由调用方给出；这里只负责
+/// 取行、按实际命中的父目录过滤，避免同一段循环在两个入口各写一遍。
+pub(crate) fn attach_parents(
+    conn: &Connection,
+    items: &[ItemRow],
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<ItemRow>, String> {
+    let file_parent_keys: std::collections::HashSet<&str> = items
+        .iter()
+        .filter(|i| i.kind == "video" || i.kind == "image")
+        .filter_map(|i| i.parent_path.as_deref())
+        .collect();
+    if file_parent_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params, row_to_item)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        let row = r.map_err(|e| e.to_string())?;
+        if file_parent_keys.contains(row.path_key.as_str()) {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
 /// Name fuzzy search over non-missing library items. Favorites (the root
 /// container rows) are intentionally excluded; matched video/image files get
 /// their parent pack/group rows returned separately for grouped display.
@@ -150,7 +193,7 @@ pub fn search_items_inner(
         });
     }
     let like = format!("%{}%", escape_like(trimmed));
-    let limit = limit.unwrap_or(60).clamp(1, 200);
+    let limit = clamp_query_limit(limit);
 
     // 名称命中 OR 标签命中：标签走 item_tags→tags 子查询，同一 ?1 LIKE 模式复用。
     let mut sql = format!(
@@ -282,43 +325,26 @@ pub fn search_items_inner(
 
     // Parent rows for the remaining matched single files, so the UI can show
     // e.g. "在《Season 1》中找到 3 个匹配" without another round-trip.
-    let file_parent_keys: std::collections::HashSet<&str> = items
-        .iter()
-        .filter(|i| i.kind == "video" || i.kind == "image")
-        .filter_map(|i| i.parent_path.as_deref())
-        .collect();
-    let parents = if file_parent_keys.is_empty() {
-        Vec::new()
-    } else {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {ITEM_COLUMNS} FROM items
-                 WHERE path_key IN (
-                     SELECT DISTINCT parent_path FROM items
-                     WHERE missing = 0 AND kind IN ('video', 'image') AND (
-                        name LIKE ?1 ESCAPE '\\'
-                        OR id IN (
-                            SELECT it.item_id FROM item_tags it
-                            JOIN tags t ON t.id = it.tag_id
-                            WHERE t.name LIKE ?1 ESCAPE '\\'
-                        )
-                     )
+    let parents = attach_parents(
+        conn,
+        &items,
+        &format!(
+            "SELECT {ITEM_COLUMNS} FROM items
+             WHERE path_key IN (
+                 SELECT DISTINCT parent_path FROM items
+                 WHERE missing = 0 AND kind IN ('video', 'image') AND (
+                    name LIKE ?1 ESCAPE '\\'
+                    OR id IN (
+                        SELECT it.item_id FROM item_tags it
+                        JOIN tags t ON t.id = it.tag_id
+                        WHERE t.name LIKE ?1 ESCAPE '\\'
+                    )
                  )
-                 ORDER BY name COLLATE NOCASE"
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([&like], row_to_item)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for r in rows {
-            let row = r.map_err(|e| e.to_string())?;
-            if file_parent_keys.contains(row.path_key.as_str()) {
-                out.push(row);
-            }
-        }
-        out
-    };
+             )
+             ORDER BY name COLLATE NOCASE"
+        ),
+        &[&like as &dyn rusqlite::ToSql],
+    )?;
 
     Ok(SearchResults { items, parents })
 }
@@ -330,9 +356,9 @@ pub fn search_items(
     kind: Option<String>,
     limit: Option<i64>,
 ) -> Result<SearchResults, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    search_items_inner(&conn, &query, kind.as_deref(), limit)
+    with_conn(&app, |conn| {
+        search_items_inner(conn, &query, kind.as_deref(), limit)
+    })
 }
 
 pub fn get_progress_inner(conn: &Connection) -> Result<Vec<ProgressRow>, String> {
@@ -448,56 +474,32 @@ pub fn clear_library_inner(conn: &Connection) -> Result<usize, String> {
 
 #[tauri::command]
 pub fn get_progress(app: AppHandle) -> Result<Vec<ProgressRow>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    get_progress_inner(&conn)
+    with_conn(&app, get_progress_inner)
 }
 
 #[tauri::command]
 pub fn save_progress_map(app: AppHandle, entries: Vec<ProgressEntry>) -> Result<usize, String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let saved = save_progress_map_inner(&tx, &entries)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(saved)
+    with_tx(&app, |conn| save_progress_map_inner(conn, &entries))
 }
 
 #[tauri::command]
 pub fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteRow>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    get_favorites_inner(&conn)
+    with_conn(&app, get_favorites_inner)
 }
 
 #[tauri::command]
 pub fn add_favorite(app: AppHandle, path: String, name: String) -> Result<(), String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    add_favorite_inner(&tx, &path, &name)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    with_tx(&app, |conn| add_favorite_inner(conn, &path, &name))
 }
 
 #[tauri::command]
 pub fn remove_favorite(app: AppHandle, path: String) -> Result<(), String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    remove_favorite_inner(&tx, &path)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    with_tx(&app, |conn| remove_favorite_inner(conn, &path))
 }
 
 #[tauri::command]
 pub fn clear_library(app: AppHandle) -> Result<usize, String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let n = clear_library_inner(&tx)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(n)
+    with_tx(&app, clear_library_inner)
 }
 
 /// Core logic for force_rescan, kept free of transaction handling so it can be tested.
@@ -516,12 +518,7 @@ pub fn force_rescan_inner(conn: &Connection) -> Result<usize, String> {
 
 #[tauri::command]
 pub fn force_rescan(app: AppHandle) -> Result<usize, String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let n = force_rescan_inner(&tx)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(n)
+    with_tx(&app, force_rescan_inner)
 }
 
 /// Core sync logic, kept free of transaction handling so it can be tested.
@@ -643,65 +640,41 @@ pub fn sync_favorite(
     favorite: ItemInput,
     entries: Vec<ItemInput>,
 ) -> Result<SyncStats, String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let stats = sync_favorite_inner(&tx, &favorite, &entries)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(stats)
+    with_tx(&app, |conn| sync_favorite_inner(conn, &favorite, &entries))
+}
+
+/// 全量条目行，供 Home 等页面启动时直接重建视图模型。
+pub fn list_items_inner(conn: &Connection) -> Result<Vec<ItemRow>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {ITEM_COLUMNS} FROM items WHERE missing = 0 ORDER BY name"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], row_to_item)
+        .map_err(|e| e.to_string())?;
+    rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }
 
 #[tauri::command]
 pub fn list_items(app: AppHandle) -> Result<Vec<ItemRow>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, kind, media_type, name, ext, path_key, parent_path, folder,
-                    size, mtime, extra, created_at, updated_at
-             FROM items WHERE missing = 0 ORDER BY name",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            let extra: String = row.get(10)?;
-            Ok(ItemRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                media_type: row.get(2)?,
-                name: row.get(3)?,
-                ext: row.get(4)?,
-                path_key: row.get(5)?,
-                parent_path: row.get(6)?,
-                folder: row.get(7)?,
-                size: row.get(8)?,
-                mtime: row.get(9)?,
-                extra: serde_json::from_str(&extra).unwrap_or(serde_json::Value::Null),
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
-                matched_tags: Vec::new(),
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+    with_conn(&app, list_items_inner)
 }
 
 #[tauri::command]
 pub fn library_meta(app: AppHandle) -> Result<LibraryMeta, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let synced: i64 = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM items WHERE kind = 'favorite' AND updated_at != created_at)",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(LibraryMeta { synced: synced != 0 })
+    with_conn(&app, |conn| {
+        let synced: i64 = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE kind = 'favorite' AND updated_at != created_at)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(LibraryMeta {
+            synced: synced != 0,
+        })
+    })
 }
 
 #[cfg(test)]

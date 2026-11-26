@@ -9,18 +9,21 @@ import {
   prefetchCovers,
   libraryVersion,
 } from "../store/browserCache";
-import { itemId } from "../utils/itemKey";
 import { isVideo } from "../utils/media";
+import { byName, kindOfRow, nodeShape } from "../utils/libraryView";
+import { openComic, openLibraryItem, openMediaPack } from "../utils/open";
 import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { invoke } from "@tauri-apps/api/core";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { useLazyCovers } from "../utils/lazyCovers";
 import Icon from "./Icon.vue";
 import MediaCover from "./MediaCover.vue";
+import BookCover from "./BookCover.vue";
 
 defineOptions({ name: "Home" });
 
@@ -38,7 +41,6 @@ const comics = ref([]);
 const media = ref([]);
 const mediaGroups = ref([]);
 const scanning = ref(false);
-const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
 const pageRef = ref(null);
 const homeScrollKey = () => `home:${mode.value}`;
 const homeScroll = createScrollRestorer({
@@ -104,34 +106,6 @@ const scanAll = async () => {
   mediaGroups.value = groups.sort(byName);
   media.value = groups.flatMap((g) => g.items).sort(byName);
 };
-
-const extraOf = (row) => row.extra || {};
-
-const nodeShape = (row, favName, kind, ext) => ({
-  name: row.name,
-  key: row.pathKey,
-  path: row.pathKey,
-  dir: row.parentPath || row.pathKey,
-  folder: favName,
-  kind,
-  ext,
-  count: extraOf(row).count ?? 0,
-  // 单文件条目（video/image 行）：计数直接定为 1
-  videoCount: kind === "video" ? 1 : extraOf(row).videoCount ?? 0,
-  imageCount: kind === "image" ? 1 : extraOf(row).imageCount ?? 0,
-  childCount: extraOf(row).childCount ?? 0,
-  children: [],
-  files: [],
-});
-
-const kindOfRow = (row) =>
-  row.kind === "group"
-    ? { kind: "group", ext: "group" }
-    : row.mediaType === "video"
-      ? { kind: "video-folder", ext: "video" }
-      : row.mediaType === "image"
-        ? { kind: "image-folder", ext: "image" }
-        : { kind: "media-folder", ext: "media" };
 
 // Rebuild the in-memory view model (comics / media / mediaGroups) from DB rows.
 const applyLibrary = (rows) => {
@@ -281,42 +255,9 @@ watch(
   }
 );
 
-const openBook = async (book) => {
+const openBook = (book) => {
   freezeHomeScroll();
-  const key = canonKey(book.key);
-  const id = await itemId(key);
-  router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext } });
-};
-
-const openVideo = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/video/${id}`,
-    query: { path: item.path || item.key, name: item.name },
-  });
-};
-
-const openImagePack = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  const p = item.path || item.key;
-  router.push({
-    path: `/media/${id}`,
-    query:
-      item.kind === "image"
-        ? { path: p, name: item.name } // 单张图片：直接展示
-        : { dir: p, path: p, name: item.name }, // 图包目录：列出并定位
-  });
-};
-
-const openMediaPack = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/media-pack/${id}`,
-    query: { dir: item.path || item.key, name: item.name },
-  });
+  return openComic(book);
 };
 
 const openMediaGroup = (group) => {
@@ -324,12 +265,11 @@ const openMediaGroup = (group) => {
   return openMediaPack({ key: canonKey(group.path), path: group.path, name: group.name });
 };
 
+// 聚合内容里的条目可能是子文件夹（pack/group）、单文件视频或单张图片；
+// 打开路由由 open.js 按 kind 分派。
 const openMedia = (item) => {
   freezeHomeScroll();
-  // 聚合内容里的条目可能是子文件夹（pack/group）、单文件视频或单张图片
-  if (item.kind === "video") return openVideo(item);
-  if (item.kind === "image") return openImagePack(item);
-  return openMediaPack(item);
+  return openLibraryItem(item);
 };
 
 /* ===== 封面懒加载（与书架共用缓存队列） ===== */
@@ -360,48 +300,19 @@ const onHomeContextMenu = (e) => {
 };
 
 const openItemMenu = (item, kind, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
-        label: "打开",
+    items: buildItemMenu({
+      item,
+      isAndroid: booksStore.platform === "android",
+      isDir: kind === "media",
+      actions: { copyPath, editTags, revealPath, requestDelete },
+      open: {
         icon: kind === "comic" ? "book-open" : "play",
-        onSelect: () => {
-          closeContextMenu();
-          if (kind === "comic") openBook(item);
-          else openMedia(item);
-        },
+        onOpen: () => (kind === "comic" ? openBook(item) : openMedia(item)),
       },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(item),
-      },
-      {
-        id: "tags",
-        label: "编辑标签",
-        icon: "tag",
-        onSelect: () => editTags(item),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(item),
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(item, kind === "media"),
-      },
-    ],
+    }),
   });
 };
 
@@ -585,21 +496,14 @@ onUnmounted(() => {
           :style="shouldReveal(i, 'home.comics') ? { animationDelay: `${Math.min(i * 36, 500)}ms` } : undefined"
           @click="longPress.onCellClick(() => openBook(book))"
         >
-          <div class="book-cover" :data-key="book.key">
-            <img
-              v-if="covers[book.key]"
-              :src="covers[book.key]"
-              class="book-cover-img"
-              alt=""
-              loading="lazy"
-              decoding="async"
-            />
-            <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
-            <template v-if="settings.showSource">
-              <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
-              <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
-            </template>
-          </div>
+          <BookCover
+            :src="covers[book.key]"
+            :ext="book.ext"
+            :folder="book.folder"
+            :meta="settings.showSource"
+            :data-key="book.key"
+            data-kind="comic"
+          />
           <div class="book-name">
             {{ book.name }}
           </div>
@@ -1155,90 +1059,9 @@ onUnmounted(() => {
   user-select: none;
 }
 
-.book-cover {
-  position: relative;
-  aspect-ratio: 1 / 1.414;
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-1);
-  transition: transform 0.45s var(--ease-spring);
-  display: grid;
-  place-items: center;
-
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.18));
-    opacity: 0;
-    transition: opacity 0.35s;
-    pointer-events: none;
-  }
-}
-
-.book-cell:hover .book-cover {
-  transform: translateY(-6px) scale(1.02);
-  box-shadow: var(--shadow-2);
-  &::after {
-    opacity: 1;
-  }
-}
-
 /* 夜间模式只保留一层界面级暗角，避免为每张封面单独绘制阴影。 */
 :global(.theme-dark) .home-page {
   box-shadow: inset 0 0 52px rgba(0, 0, 0, 0.3);
-}
-
-:global(.theme-dark) .book-cover,
-:global(.theme-dark) .book-cell:hover .book-cover {
-  box-shadow: none;
-}
-
-.book-cover-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.book-cover-ph {
-  color: var(--text-3);
-  display: grid;
-  place-items: center;
-}
-
-.book-ext {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.72);
-}
-
-.book-folder {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: 55%;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.64);
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.72);
 }
 
 .book-name {
@@ -1598,7 +1421,6 @@ onUnmounted(() => {
     transform: none;
   }
 
-  .book-cell:hover .book-cover,
   .media-cover:hover {
     transform: none;
   }

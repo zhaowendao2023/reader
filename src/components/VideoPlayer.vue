@@ -9,6 +9,7 @@ import { covers, canonKey, dirCache, mediaDirKey, enqueueCover } from "../store/
 import { itemId } from "../utils/itemKey";
 import { flushProgress, getVideoProgressEntry, getVideoProgressMap, setVideoProgress } from "../utils/progress";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { enterSystemUIImmersive, exitSystemUIImmersive } from "../utils/systemBar";
@@ -321,42 +322,23 @@ const next = () => playIndex(index.value + 1);
 const prev = () => playIndex(index.value - 1);
 
 const openPlaylistItemMenu = (file, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "play",
+    items: buildItemMenu({
+      item: file,
+      isAndroid: booksStore.platform === "android",
+      showTags: false,
+      actions: { copyPath, revealPath, requestDelete },
+      open: {
         label: "播放",
         icon: "play",
-        onSelect: () => {
-          closeContextMenu();
+        onOpen: () => {
           const i = files.value.findIndex((f) => f.path === file.path);
           if (i >= 0) playIndex(i);
         },
       },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(file),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(file),
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(file, false),
-      },
-    ],
+    }),
   });
 };
 

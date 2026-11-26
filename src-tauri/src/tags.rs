@@ -6,11 +6,11 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-use crate::db::AppDb;
+use crate::db::{with_conn, with_tx};
 use crate::paths::now_ms;
-use crate::sync::{row_to_item, ItemRow, ITEM_COLUMNS};
+use crate::sync::{attach_parents, clamp_query_limit, row_to_item, ItemRow, ITEM_COLUMNS};
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -286,7 +286,7 @@ pub fn get_tag_items_inner(
             parents: Vec::new(),
         });
     }
-    let limit = limit.unwrap_or(60).clamp(1, 200);
+    let limit = clamp_query_limit(limit);
 
     // 选中标签名：返回的条目满足全部选中标签，所以直接全部标记
     let mut tag_names: Vec<String> = Vec::new();
@@ -344,53 +344,36 @@ pub fn get_tag_items_inner(
     }
 
     // Parent pack/group rows of matched video/image files, same as search.
-    let file_parent_keys: std::collections::HashSet<&str> = items
+    let tag_params: Vec<&dyn rusqlite::ToSql> = tag_ids
         .iter()
-        .filter(|i| i.kind == "video" || i.kind == "image")
-        .filter_map(|i| i.parent_path.as_deref())
+        .map(|id| id as &dyn rusqlite::ToSql)
         .collect();
-    let parents = if file_parent_keys.is_empty() {
-        Vec::new()
-    } else {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {ITEM_COLUMNS} FROM items
-                 WHERE path_key IN (
-                     SELECT DISTINCT parent_path FROM items
-                     WHERE missing = 0 AND kind IN ('video', 'image')
-                       AND id IN ({sub_sql})
-                 )
-                 ORDER BY name COLLATE NOCASE"
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(tag_ids.iter()), row_to_item)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for r in rows {
-            let row = r.map_err(|e| e.to_string())?;
-            if file_parent_keys.contains(row.path_key.as_str()) {
-                out.push(row);
-            }
-        }
-        out
-    };
+    let parents = attach_parents(
+        conn,
+        &items,
+        &format!(
+            "SELECT {ITEM_COLUMNS} FROM items
+             WHERE path_key IN (
+                 SELECT DISTINCT parent_path FROM items
+                 WHERE missing = 0 AND kind IN ('video', 'image')
+                   AND id IN ({sub_sql})
+             )
+             ORDER BY name COLLATE NOCASE"
+        ),
+        &tag_params,
+    )?;
 
     Ok(TagItemResults { items, parents })
 }
 
 #[tauri::command]
 pub fn list_tags(app: AppHandle) -> Result<Vec<TagRow>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    list_tags_inner(&conn)
+    with_conn(&app, list_tags_inner)
 }
 
 #[tauri::command]
 pub fn get_item_tags(app: AppHandle, path_key: String) -> Result<Vec<TagRow>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    get_item_tags_inner(&conn, &path_key)
+    with_conn(&app, |conn| get_item_tags_inner(conn, &path_key))
 }
 
 #[tauri::command]
@@ -399,32 +382,17 @@ pub fn set_item_tags(
     path_key: String,
     tags: Vec<String>,
 ) -> Result<Vec<TagRow>, String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let out = set_item_tags_inner(&tx, &path_key, &tags)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(out)
+    with_tx(&app, |conn| set_item_tags_inner(conn, &path_key, &tags))
 }
 
 #[tauri::command]
 pub fn rename_tag(app: AppHandle, tag_id: i64, name: String) -> Result<(), String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    rename_tag_inner(&tx, tag_id, &name)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    with_tx(&app, |conn| rename_tag_inner(conn, tag_id, &name))
 }
 
 #[tauri::command]
 pub fn delete_tag(app: AppHandle, tag_id: i64) -> Result<(), String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    delete_tag_inner(&tx, tag_id)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    with_tx(&app, |conn| delete_tag_inner(conn, tag_id))
 }
 
 #[tauri::command]
@@ -433,26 +401,17 @@ pub fn get_tag_items(
     tag_ids: Vec<i64>,
     limit: Option<i64>,
 ) -> Result<TagItemResults, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    get_tag_items_inner(&conn, &tag_ids, limit)
+    with_conn(&app, |conn| get_tag_items_inner(conn, &tag_ids, limit))
 }
 
 #[tauri::command]
 pub fn set_tag_kind(app: AppHandle, tag_id: i64, kind: String) -> Result<(), String> {
-    let db = app.state::<AppDb>();
-    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    set_tag_kind_inner(&tx, tag_id, &kind)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    with_tx(&app, |conn| set_tag_kind_inner(conn, tag_id, &kind))
 }
 
 #[tauri::command]
 pub fn get_tag_samples(app: AppHandle, tag_ids: Vec<i64>) -> Result<Vec<TagSample>, String> {
-    let db = app.state::<AppDb>();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    get_tag_samples_inner(&conn, &tag_ids)
+    with_conn(&app, |conn| get_tag_samples_inner(conn, &tag_ids))
 }
 
 #[cfg(test)]

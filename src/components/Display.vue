@@ -4,17 +4,19 @@ import { useSettings } from "../store/settings";
 import { useUI } from "../store/ui";
 import { invoke } from "@tauri-apps/api/core";
 import { covers, canonKey, enqueueCover, prefetchCovers } from "../store/browserCache";
-import { itemId } from "../utils/itemKey";
 import { isVideo } from "../utils/media";
+import { openComic, openImage, openMediaPack, openVideo } from "../utils/open";
 import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { useLazyCovers } from "../utils/lazyCovers";
 import Icon from "./Icon.vue";
 import MediaCover from "./MediaCover.vue";
+import BookCover from "./BookCover.vue";
 
 const booksStore = useBooks();
 const settings = useSettings();
@@ -205,48 +207,13 @@ watch(
   }
 );
 
-const openComic = async (book) => {
-  const key = canonKey(book.key);
-  const id = await itemId(key);
-  router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext, back: "shelf" } });
-};
-
-const openVideo = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/video/${id}`,
-    query: { dir: item.dir || currentDir.value?.path, path: item.path || item.key, name: item.name, playlist: "1" },
-  });
-};
-
-const openImagePack = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  const p = item.path || item.key;
-  router.push({
-    path: `/media/${id}`,
-    query:
-      item.kind === "image"
-        ? { path: p, name: item.name } // 单张图片：直接展示
-        : { dir: p, path: p, name: item.name }, // 图包目录：列出并定位
-  });
-};
-
-const openMediaPack = async (item) => {
-  const key = canonKey(item.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/media-pack/${id}`,
-    query: { dir: item.path || item.key, name: item.name },
-  });
-};
-
 const openBook = (book) => {
   displayScroll.checkpoint();
-  if (book.kind === "comic") return openComic(book);
-  if (book.kind === "video") return openVideo(book);
-  if (book.kind === "image") return openImagePack(book);
+  if (book.kind === "comic") return openComic(book, { back: "shelf" });
+  if (book.kind === "video") {
+    return openVideo(book, { dir: book.dir || currentDir.value?.path, playlist: true });
+  }
+  if (book.kind === "image") return openImage(book);
   return openMediaPack(book);
 };
 
@@ -274,104 +241,47 @@ const rebuildMaps = () => {
 watch([books, favoriteDirs], rebuildMaps, { immediate: true });
 
 const openPlateMenu = (dir, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
-        label: "打开",
-        icon: "folder",
-        onSelect: () => {
-          closeContextMenu();
-          openDir(dir);
+    items: buildItemMenu({
+      item: dir,
+      isAndroid: booksStore.platform === "android",
+      isDir: true,
+      actions: { copyPath, editTags, revealPath, requestDelete },
+      open: { icon: "folder", onOpen: () => openDir(dir) },
+      extra: [
+        {
+          id: "unfav",
+          label: "取消收藏",
+          icon: "star",
+          onSelect: () => {
+            closeContextMenu();
+            removeDir(dir);
+          },
         },
-      },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(dir),
-      },
-      {
-        id: "tags",
-        label: "编辑标签",
-        icon: "tag",
-        onSelect: () => editTags(dir),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(dir),
-      },
-      {
-        id: "unfav",
-        label: "取消收藏",
-        icon: "star",
-        onSelect: () => {
-          closeContextMenu();
-          removeDir(dir);
-        },
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(dir, true),
-      },
-    ],
+      ],
+    }),
   });
 };
 
 const openBookMenu = (book, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   // 只有目录类条目（收藏分组/图包/媒体夹）删除时按整目录递归删，
   // 单文件视频/图片按文件删
   const isDir = ["group", "pack", "video-folder", "image-folder", "media-folder"].includes(book.kind);
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
-        label: "打开",
+    items: buildItemMenu({
+      item: book,
+      isAndroid: booksStore.platform === "android",
+      isDir,
+      actions: { copyPath, editTags, revealPath, requestDelete },
+      open: {
         icon: book.kind === "comic" ? "book-open" : "play",
-        onSelect: () => {
-          closeContextMenu();
-          openBook(book);
-        },
+        onOpen: () => openBook(book),
       },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(book),
-      },
-      {
-        id: "tags",
-        label: "编辑标签",
-        icon: "tag",
-        onSelect: () => editTags(book),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(book),
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(book, isDir),
-      },
-    ],
+    }),
   });
 };
 
@@ -509,8 +419,17 @@ const totalBooks = computed(() =>
           :style="entranceActive('display.folder') ? { animationDelay: `${Math.min(i * 40, 500)}ms` } : undefined"
           @click="longPress.onCellClick(() => openBook(book))"
         >
+          <BookCover
+            v-if="book.kind === 'comic'"
+            :src="covers[book.key]"
+            :ext="book.ext"
+            :folder="book.folder"
+            :meta="settings.showSource"
+            :data-key="book.key"
+            data-kind="comic"
+          />
           <MediaCover
-            v-if="book.kind !== 'comic'"
+            v-else
             :kind="book.kind"
             :ext="book.ext"
             :count="book.count"
@@ -523,21 +442,6 @@ const totalBooks = computed(() =>
             :data-key="book.key"
             :data-kind="book.kind"
           />
-          <div v-else class="book-cover" :data-key="book.key">
-            <img
-              v-if="covers[book.key]"
-              :src="covers[book.key]"
-              class="book-cover-img"
-              alt=""
-              loading="lazy"
-              decoding="async"
-            />
-            <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
-            <template v-if="settings.showSource">
-              <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
-              <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
-            </template>
-          </div>
           <div class="book-name">
             <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
           </div>
@@ -849,80 +753,6 @@ const totalBooks = computed(() =>
   contain-intrinsic-size: auto 300px;
 }
 
-.book-cover {
-  position: relative;
-  aspect-ratio: 1 / 1.414;
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-1);
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
-  display: grid;
-  place-items: center;
-
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.18));
-    opacity: 0;
-    transition: opacity 0.35s;
-    pointer-events: none;
-  }
-}
-
-.book-cell:hover .book-cover {
-  transform: translateY(-6px) scale(1.02);
-  box-shadow: var(--shadow-2);
-  &::after {
-    opacity: 1;
-  }
-}
-
-.book-cover-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.book-cover-ph {
-  color: var(--text-3);
-  display: grid;
-  place-items: center;
-}
-
-.book-ext {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  backdrop-filter: blur(6px);
-}
-
-.book-folder {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: 55%;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  backdrop-filter: blur(6px);
-}
-
 .book-name {
   font-size: 12.5px;
   color: var(--text-2);
@@ -1025,7 +855,6 @@ const totalBooks = computed(() =>
    并与滚动恢复锚点重叠。颜色反馈、:active、骨架屏保留。 */
 @media (hover: none) {
   .plate:hover,
-  .book-cell:hover .book-cover,
   .plate:hover .plate-art,
   .plate:hover .plate-ico {
     transform: none;

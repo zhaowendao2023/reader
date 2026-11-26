@@ -4,11 +4,12 @@ import { useBooks } from "../store/loadBooks";
 import { useSettings } from "../store/settings";
 import { scanFavoriteTree } from "../utils/mediaScan";
 import { IMAGE_EXTS, VIDEO_EXTS, extOf } from "../utils/media";
-import { itemId } from "../utils/itemKey";
+import { openImage as openImageRoute, openMediaPack, openVideo as openVideoRoute } from "../utils/open";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { covers, canonKey, prefetchCovers, stopPrefetch } from "../store/browserCache";
 import { useLazyCovers } from "../utils/lazyCovers";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import Icon from "./Icon.vue";
@@ -174,43 +175,29 @@ const goBack = () => {
   else router.push("/");
 };
 
-const openVideo = async (file) => {
+const openVideo = (file) => {
   persistPackAnchorBeforeNav();
-  const key = canonKey(file.path);
-  const id = await itemId(key);
-  router.push({
-    path: `/video/${id}`,
-    query: { dir: dir.value, path: file.path, name: file.name, playlist: "1" },
-  });
+  return openVideoRoute(file, { dir: dir.value, playlist: true });
 };
 
-const openImage = async (file) => {
+const openImage = (file) => {
   persistPackAnchorBeforeNav();
-  const key = canonKey(file.path);
-  const id = await itemId(key);
-  router.push({
-    path: `/media/${id}`,
-    query: { dir: dir.value, path: file.path, name: file.name },
-  });
+  return openImageRoute(file, { dir: dir.value });
 };
 
 const playAll = () => {
   if (videos.value.length) openVideo(videos.value[0]);
 };
 
-const viewImages = async () => {
+const viewImages = () => {
   if (!images.value.length) return;
   persistPackAnchorBeforeNav();
-  const key = canonKey(dir.value);
-  const id = await itemId(key);
-  router.push({ path: `/media/${id}`, query: { dir: dir.value, name: name.value } });
+  return openImageRoute({ key: dir.value, path: dir.value, kind: "pack", name: name.value });
 };
 
-const openPack = async (item) => {
+const openPack = (item) => {
   persistPackAnchorBeforeNav();
-  const key = canonKey(item.path);
-  const id = await itemId(key);
-  router.push({ path: `/media-pack/${id}`, query: { dir: item.path, name: item.name } });
+  return openMediaPack(item);
 };
 
 const openChild = (child) => openPack(child);
@@ -254,44 +241,21 @@ onUnmounted(() => {
 });
 
 const openPackRowMenu = (item, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   const isDir = Boolean(item.kind && item.kind !== "comic");
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
-        label: "打开",
+    items: buildItemMenu({
+      item,
+      isAndroid: booksStore.platform === "android",
+      isDir,
+      showTags: false,
+      actions: { copyPath, revealPath, requestDelete },
+      open: {
         icon: isDir ? "folder" : item.kind === "image" ? "image" : "play",
-        onSelect: () => {
-          closeContextMenu();
-          if (isDir) openChild(item);
-          else if (item.kind === "image") openImage(item);
-          else openVideo(item);
-        },
+        onOpen: () => (isDir ? openChild(item) : item.kind === "image" ? openImage(item) : openVideo(item)),
       },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(item),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(item),
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(item, isDir),
-      },
-    ],
+    }),
   });
 };
 

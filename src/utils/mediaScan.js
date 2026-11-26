@@ -2,8 +2,7 @@ import { readDir } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import { canonKey } from "../store/browserCache";
 import { extOf, isComicFile, isImage, isVideo, joinPath, packKindFor } from "./media";
-
-const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
+import { byName } from "./libraryView";
 
 const leafName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p;
 

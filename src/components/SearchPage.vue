@@ -4,11 +4,13 @@ import { useSettings } from "../store/settings";
 import { covers, scrollMemory } from "../store/browserCache";
 import Icon from "./Icon.vue";
 import MediaCover from "./MediaCover.vue";
+import BookCover from "./BookCover.vue";
 import { openSearchItem } from "../utils/open";
 import { useLazyCovers } from "../utils/lazyCovers";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { tagColor, hexToRgba } from "../utils/tagColor";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
+import { byName, kindOfRow, nodeShape } from "../utils/libraryView";
 
 defineOptions({ name: "SearchPage" });
 
@@ -16,8 +18,6 @@ const ui = useUI();
 const settings = useSettings();
 const route = useRoute();
 const router = useRouter();
-
-const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
 
 const tagChipStyle = (name) => {
   const c = tagColor(name);
@@ -41,34 +41,6 @@ const searchComics = computed(() =>
     }))
     .sort(byName)
 );
-
-const extraOf = (row) => row.extra || {};
-
-const nodeShape = (row, favName, kind, ext) => ({
-  name: row.name,
-  key: row.pathKey,
-  path: row.pathKey,
-  dir: row.parentPath || row.pathKey,
-  folder: favName,
-  kind,
-  ext,
-  count: extraOf(row).count ?? 0,
-  videoCount: extraOf(row).videoCount ?? 0,
-  imageCount: extraOf(row).imageCount ?? 0,
-  childCount: extraOf(row).childCount ?? 0,
-  tags: row.matchedTags || [],
-  children: [],
-  files: [],
-});
-
-const kindOfRow = (row) =>
-  row.kind === "group"
-    ? { kind: "group", ext: "group" }
-    : row.mediaType === "video"
-      ? { kind: "video-folder", ext: "video" }
-      : row.mediaType === "image"
-        ? { kind: "image-folder", ext: "image" }
-        : { kind: "media-folder", ext: "media" };
 
 const searchPacks = computed(() =>
   ui.searchItems
@@ -219,21 +191,14 @@ onUnmounted(() => {
           :style="entranceActive('search') ? { animationDelay: `${Math.min(i * 36, 500)}ms` } : undefined"
           @click="openItem(book)"
         >
-          <div class="book-cover" :data-key="book.key" data-kind="comic">
-            <img
-              v-if="covers[book.key]"
-              :src="covers[book.key]"
-              class="book-cover-img"
-              alt=""
-              loading="lazy"
-              decoding="async"
-            />
-            <span v-else class="book-cover-ph"><Icon id="book-open" :size="34" /></span>
-            <template v-if="settings.showSource">
-              <span class="book-ext mono">{{ book.ext.toUpperCase() }}</span>
-              <span v-if="book.folder" class="book-folder mono">{{ book.folder }}</span>
-            </template>
-          </div>
+          <BookCover
+            :src="covers[book.key]"
+            :ext="book.ext"
+            :folder="book.folder"
+            :meta="settings.showSource"
+            :data-key="book.key"
+            data-kind="comic"
+          />
           <div class="book-name">
             <n-ellipsis :tooltip="false">{{ book.name }}</n-ellipsis>
           </div>
@@ -446,80 +411,6 @@ onUnmounted(() => {
   contain-intrinsic-size: auto 300px;
 }
 
-.book-cover {
-  position: relative;
-  aspect-ratio: 1 / 1.414;
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-1);
-  transition: transform 0.45s var(--ease-spring), box-shadow 0.45s var(--ease-out);
-  display: grid;
-  place-items: center;
-
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.18));
-    opacity: 0;
-    transition: opacity 0.35s;
-    pointer-events: none;
-  }
-}
-
-.book-cell:hover .book-cover {
-  transform: translateY(-6px) scale(1.02);
-  box-shadow: var(--shadow-2);
-  &::after {
-    opacity: 1;
-  }
-}
-
-.book-cover-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.book-cover-ph {
-  color: var(--text-3);
-  display: grid;
-  place-items: center;
-}
-
-.book-ext {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  backdrop-filter: blur(6px);
-}
-
-.book-folder {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: 55%;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  backdrop-filter: blur(6px);
-}
-
 .book-name {
   font-size: 12.5px;
   color: var(--text-2);
@@ -692,8 +583,7 @@ onUnmounted(() => {
    颜色/描边反馈、:active 与骨架屏保留。 */
 @media (hover: none) {
   .file-hit:hover,
-  .back-btn:hover,
-  .book-cell:hover .book-cover {
+  .back-btn:hover {
     transform: none;
   }
 }

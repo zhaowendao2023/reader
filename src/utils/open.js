@@ -1,36 +1,86 @@
-// 搜索结果打开跳转的公共逻辑：Header 下拉与 Home 结果页共用。
-// item 可以是后端 search_items 返回的 ItemRow，或包含
-// { pathKey|key|path, name, kind, ext, parentPath, mediaType } 的节点对象。
-import { canonKey, itemId } from "./itemKey";
+// 条目打开路由的唯一入口：Header 下拉、Home、收藏、文件浏览、搜索、标签、
+// 图集页都从这里进阅读/播放/看图/聚合页，避免每个页面自己算 id 和拼 query。
+//
+// item 可以是后端 ItemRow，也可以是页面节点（{ pathKey|key|path, name, kind, ext }）。
+// 各页面的差异只体现在 options：
+//   dir      目录上下文（视频/图片/图集页需要）
+//   playlist 视频是否构建播放列表（=1）
+//   back/q   返回来源页（"shelf" | "search" | "tags" …）与搜索词
+//   from     文件浏览器来源目录
 import router from "../router/index";
+import { canonKey, itemId } from "./itemKey";
 
-export const openSearchItem = async (item, { back, q } = {}) => {
-  const pkey = item.pathKey || item.key || item.path;
-  const key = canonKey(pkey);
+// 后端 ItemRow 只有 pathKey；页面节点用 path/key。三者按优先级归一。
+const pathOf = (item) => item.path || item.pathKey || item.key || "";
+
+const backQuery = ({ back, q } = {}) => ({
+  ...(back ? { back } : {}),
+  ...(q ? { q } : {}),
+});
+
+const navTo = (path, query) => router.push({ path, query });
+
+// 漫画 / 电子书 → 阅读器
+export const openComic = async (item, { back, q, from } = {}) => {
+  const key = canonKey(pathOf(item));
   const id = await itemId(key);
-  const name = item.name;
-  // back 记录来源页（让查看器/阅读器的「返回」回对地方）；q 供「回搜索页」时重新触发原关键词
-  const backQuery = { ...(back ? { back } : {}), ...(q ? { q } : {}) };
+  return navTo(`/reading/${id}`, {
+    path: key,
+    name: item.name,
+    ext: item.ext || "",
+    ...(from ? { from } : {}),
+    ...backQuery({ back, q }),
+  });
+};
 
-  if (item.kind === "comic") {
-    router.push({
-      path: `/reading/${id}`,
-      query: { path: key, name, ext: item.ext || "", ...backQuery },
-    });
-  } else if (item.kind === "video") {
-    // 单个视频：进所在目录的播放列表并定位到该文件
-    router.push({
-      path: `/video/${id}`,
-      query: { dir: item.parentPath || undefined, path: key, name, playlist: "1", ...backQuery },
-    });
-  } else if (item.kind === "image") {
-    // 单张图片：进所在目录的看图器并定位到该文件
-    router.push({
-      path: `/media/${id}`,
-      query: { dir: item.parentPath || undefined, path: key, name, ...backQuery },
-    });
-  } else {
-    // pack / group：打开聚合目录页
-    router.push({ path: `/media-pack/${id}`, query: { dir: key, name, ...backQuery } });
-  }
+// 视频 → 播放页。playlist=true 时播放页按 dir 构建列表。
+export const openVideo = async (item, { dir, playlist = false, back, q } = {}) => {
+  const key = canonKey(pathOf(item));
+  const id = await itemId(key);
+  return navTo(`/video/${id}`, {
+    ...(dir ? { dir } : {}),
+    path: pathOf(item),
+    name: item.name,
+    ...(playlist ? { playlist: "1" } : {}),
+    ...backQuery({ back, q }),
+  });
+};
+
+// 图片 → 看图器。单张图片用 path；图包/系列目录用 dir + path 列出并定位。
+export const openImage = async (item, { dir, back, q } = {}) => {
+  const key = canonKey(pathOf(item));
+  const id = await itemId(key);
+  const p = pathOf(item);
+  const single = item.kind === "image";
+  return navTo(`/media/${id}`, {
+    ...(single ? { path: p } : { dir: p, path: p }),
+    ...(single && dir ? { dir } : {}),
+    name: item.name,
+    ...backQuery({ back, q }),
+  });
+};
+
+// 图集 / 系列目录 → 聚合页
+export const openMediaPack = async (item, { dir, back, q } = {}) => {
+  const key = canonKey(pathOf(item));
+  const id = await itemId(key);
+  return navTo(`/media-pack/${id}`, {
+    dir: dir || pathOf(item),
+    name: item.name,
+    ...backQuery({ back, q }),
+  });
+};
+
+// 按节点 kind 分派，供「一个菜单/一次点击打开任意条目」的页面使用。
+export const openLibraryItem = (item, options = {}) => {
+  if (item.kind === "comic") return openComic(item, options);
+  if (item.kind === "video") return openVideo(item, options);
+  if (item.kind === "image") return openImage(item, options);
+  return openMediaPack(item, options);
+};
+
+// 搜索结果/标签结果：单个视频/图片按父目录聚合，pack/group 进聚合页。
+export const openSearchItem = (item, { back, q } = {}) => {
+  const dir = item.parentPath || item.dir;
+  return openLibraryItem(item, { back, q, dir: dir || undefined, playlist: true });
 };

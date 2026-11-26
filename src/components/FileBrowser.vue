@@ -16,8 +16,10 @@ import {
 } from "../store/browserCache";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { extOf, isVideo, isImage, joinPath, isComicFile } from "../utils/media";
-import { itemId } from "../utils/itemKey";
+import { byName } from "../utils/libraryView";
+import { openComic, openImage as openImageRoute, openVideo as openVideoRoute } from "../utils/open";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
+import { buildItemMenu } from "../utils/itemMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
 import { useLazyCovers } from "../utils/lazyCovers";
@@ -25,7 +27,6 @@ import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
 import Icon from "./Icon.vue";
 import MediaCover from "./MediaCover.vue";
 
-const router = useRouter();
 const route = useRoute();
 const booksStore = useBooks();
 const ui = useUI();
@@ -138,10 +139,8 @@ const loadDir = async (key) => {
         files.push(entry);
       }
     }
-    const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true });
-    dirs.sort(byName);
-    files.sort(byName);
-    const result = [...dirs, ...files];
+    // 目录在前、文件在后，各自按名称自然序
+    const result = [...dirs.sort(byName), ...files.sort(byName)];
     dirCache.set(ck, result);
     entries.value = result;
   } catch (error) {
@@ -286,23 +285,9 @@ const toggleFavorite = async () => {
   }
 };
 
-const openVideo = async (entry) => {
-  const key = canonKey(entry.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/video/${id}`,
-    query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name, playlist: "1" },
-  });
-};
+const openVideo = (entry) => openVideoRoute(entry, { dir: current.value?.key, playlist: true });
 
-const openImage = async (entry) => {
-  const key = canonKey(entry.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/media/${id}`,
-    query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name },
-  });
-};
+const openImage = (entry) => openImageRoute(entry, { dir: current.value?.key });
 
 const entryIcon = (entry) => {
   if (entry.isDir) return "folder";
@@ -311,22 +296,11 @@ const entryIcon = (entry) => {
   return "book-open";
 };
 
-const openBook = async (entry) => {
+const openBook = (entry) => {
   browserScroll.checkpoint();
-  if (entry.kind === "video") {
-    await openVideo(entry);
-    return;
-  }
-  if (entry.kind === "image") {
-    await openImage(entry);
-    return;
-  }
-  const key = canonKey(entry.key);
-  const id = await itemId(key);
-  router.push({
-    path: `/reading/${id}`,
-    query: { path: key, name: entry.name, ext: entry.ext, from: current.value.key },
-  });
+  if (entry.kind === "video") return openVideo(entry);
+  if (entry.kind === "image") return openImage(entry);
+  return openComic(entry, { from: current.value.key });
 };
 
 const setupAndroid = async () => {
@@ -369,49 +343,22 @@ const openPath = async (q) => {
 };
 
 const openEntryMenu = (entry, x, y) => {
-  const isAndroid = booksStore.platform === "android";
   openContextMenu({
     x,
     y,
-    items: [
-      {
-        id: "open",
+    items: buildItemMenu({
+      item: entry,
+      isAndroid: booksStore.platform === "android",
+      isDir: entry.isDir,
+      actions: { copyPath, editTags, revealPath, requestDelete },
+      // 只有收藏夹内的条目才有标签身份，目录外的文件不显示「编辑标签」
+      showTags: !isInsideFavorite(entry.key),
+      open: {
         label: entry.isDir ? "打开文件夹" : "打开",
         icon: entry.isDir ? "folder" : entryIcon(entry),
-        onSelect: () => {
-          closeContextMenu();
-          if (entry.isDir) enter(entry);
-          else openBook(entry);
-        },
+        onOpen: () => (entry.isDir ? enter(entry) : openBook(entry)),
       },
-      {
-        id: "copy",
-        label: "复制路径",
-        icon: "book-copy",
-        onSelect: () => copyPath(entry),
-      },
-      {
-        id: "tags",
-        label: "编辑标签",
-        icon: "tag",
-        hidden: !isInsideFavorite(entry.key),
-        onSelect: () => editTags(entry),
-      },
-      {
-        id: "reveal",
-        label: "在文件管理器中显示",
-        icon: "folder-open",
-        hidden: isAndroid,
-        onSelect: () => revealPath(entry),
-      },
-      {
-        id: "delete",
-        label: "删除",
-        icon: "trash",
-        danger: true,
-        onSelect: () => requestDelete(entry, entry.isDir),
-      },
-    ],
+    }),
   });
 };
 
