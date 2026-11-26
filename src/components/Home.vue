@@ -9,7 +9,7 @@ import {
   prefetchCovers,
   libraryVersion,
 } from "../store/browserCache";
-import { calculateHash } from "../utils/utils";
+import { itemId } from "../utils/itemKey";
 import { isVideo } from "../utils/media";
 import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
@@ -283,14 +283,14 @@ watch(
 
 const openBook = async (book) => {
   freezeHomeScroll();
-  const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
-  const id = await calculateHash(key);
+  const key = canonKey(book.key);
+  const id = await itemId(key);
   router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext } });
 };
 
 const openVideo = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   router.push({
     path: `/video/${id}`,
     query: { path: item.path || item.key, name: item.name },
@@ -298,8 +298,8 @@ const openVideo = async (item) => {
 };
 
 const openImagePack = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   const p = item.path || item.key;
   router.push({
     path: `/media/${id}`,
@@ -311,8 +311,8 @@ const openImagePack = async (item) => {
 };
 
 const openMediaPack = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   router.push({
     path: `/media-pack/${id}`,
     query: { dir: item.path || item.key, name: item.name },

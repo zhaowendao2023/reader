@@ -5,6 +5,7 @@ import { EPUB } from '../js/epub.js'
 import { makeComicBook } from "./comic-book.js"
 import { basename, extname } from "@tauri-apps/api/path"
 import { recordTiming } from "../utils/coverTiming"
+import { canonKey } from "../utils/itemKey"
 
 // 按需读取文件局部内容的 Reader：zip.js 只在需要时才通过
 // FileHandle 读取对应字节段，避免把整个压缩包一次性传到前端。
@@ -148,12 +149,6 @@ const buildZipLoader = async (path, options = {}) => {
   }
 }
 
-const isWindows = /Windows/i.test(navigator.userAgent)
-// Windows 下路径大小写不敏感、斜杠可混用：缓存 key 统一成小写 + 反斜杠
-// （与 browserCache.canonKey 同构），避免同一文件两种写法生成两个缓存项、
-// 双份文件句柄。
-const zipCacheKey = (path) => (isWindows ? path.toLowerCase().replace(/\//g, "\\") : path)
-
 // 按 path 单例化 zip 解析结果（引用计数 + 空闲延迟释放）：
 // 大 CBZ（几千条目）的 central directory 只解析一次，同一路径的多位持有者
 // （阅读页 getComic、封面提取 getBookCover）共享文件句柄与 entries/map，
@@ -183,7 +178,7 @@ const evictIdleZipLoader = () => {
 const makeZipLoader = async (path, options = {}) => {
   if (!options.cache) return buildZipLoader(path, options)
 
-  const key = zipCacheKey(path)
+  const key = canonKey(path)
   const cached = zipLoaderCache.get(key)
   if (cached) {
     // 命中缓存：取消待释放定时器，复用同一解析结果
@@ -240,10 +235,6 @@ const isEPUB = (path) => {
   return path.toLowerCase().endsWith('.epub')
 }
 
-const isFB2 = ({ name, type }) => {
-  return type === 'application/x-fictionbook+xml' || name.endsWith('.fb2')
-}
-
 export const openFile = async (path) => {
   const startTime = performance.now();
 
@@ -275,11 +266,9 @@ export const openFile = async (path) => {
       const fflate = await import('./vendor/fflate.js')
       book = await new MOBI({ unzlib: fflate.unzlibSync }).open(file)
     }
-    else if (isFB2(file)) {
-      const { makeFB2 } = await import('./fb2.js')
-      book = await makeFB2(file)
-    }
   }
+
+  if (!book) throw new Error(`不支持的书籍格式：.${ext || name}`)
 
   book.name = name
   book.ext = ext

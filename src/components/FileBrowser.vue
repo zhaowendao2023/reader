@@ -14,9 +14,9 @@ import {
   canonKey,
   prefetchCovers,
 } from "../store/browserCache";
-import { calculateHash } from "../utils/utils";
 import { createScrollRestorer } from "../utils/scrollAnchor";
-import { extOf, isVideo, isImage } from "../utils/media";
+import { extOf, isVideo, isImage, joinPath, isComicFile } from "../utils/media";
+import { itemId } from "../utils/itemKey";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
 import { useItemActions } from "../utils/itemActions";
 import { useCellLongPress } from "../utils/longPress";
@@ -37,8 +37,6 @@ const { copyPath, revealPath, requestDelete, editTags } = useItemActions({
   },
 });
 
-const COMIC_EXTS = ["cbz", "zip", "epub", "mobi"];
-
 const isAndroid = computed(() => booksStore.platform === "android");
 
 const current = ref(null); // { name, key }，null = 根视图
@@ -58,10 +56,8 @@ watch(entries, () => markEntrancePlayed("browse.files"));
 const view = ref("auto");
 const isFavorite = computed(() => {
   if (!current.value) return false;
-  const key = booksStore.platform === "windows" ? current.value.key.toLowerCase() : current.value.key;
-  return booksStore.favoriteDirs.some((d) =>
-    booksStore.platform === "windows" ? d.path.toLowerCase() === key : d.path === current.value.key
-  );
+  const key = canonKey(current.value.key);
+  return booksStore.favoriteDirs.some((d) => canonKey(d.path) === key);
 });
 const effectiveView = computed(() =>
   view.value === "auto" ? (isFavorite.value ? "grid" : "list") : view.value
@@ -71,9 +67,9 @@ const effectiveView = computed(() =>
 // 打标签才有意义；浏览未收藏目录时菜单里不显示「编辑标签」。
 const isInsideFavorite = (path) => {
   const sep = booksStore.platform === "windows" ? "\\" : "/";
-  const key = cacheKey(path);
+  const key = canonKey(path);
   return booksStore.favoriteDirs.some((d) => {
-    const rootKey = cacheKey(d.path);
+    const rootKey = canonKey(d.path);
     return key === rootKey || key.startsWith(rootKey.endsWith(sep) ? rootKey : rootKey + sep);
   });
 };
@@ -82,23 +78,11 @@ const isInsideFavorite = (path) => {
 const allFilesOk = ref(false);
 const rootKey = ref(null);
 
-const cacheKey = (key) => (booksStore.platform === "windows" ? key.toLowerCase() : key);
-
 // 滚动位置缓存：按目录规范化 key 记忆上次位置，删除重载/缓存失效重建列表时
 // 恢复，避免删除文件后列表被弹回顶部、要重新翻很久。根视图用特殊 key。
 const ROOT_SCROLL_KEY = "\u0000root";
 const currentScrollKey = () =>
-  current.value ? cacheKey(current.value.key) : ROOT_SCROLL_KEY;
-const joinPath = (base, name) => {
-  const sep = booksStore.platform === "windows" ? "\\" : "/";
-  return base.endsWith(sep) ? base + name : base + sep + name;
-};
-
-const isComicFile = (name) => {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return COMIC_EXTS.includes(name.slice(dot + 1).toLowerCase());
-};
+  current.value ? canonKey(current.value.key) : ROOT_SCROLL_KEY;
 
 const loadRoot = async () => {
   const cached = getDrivesCache();
@@ -125,7 +109,7 @@ const loadRoot = async () => {
 };
 
 const loadDir = async (key) => {
-  const ck = isAndroid.value ? key : cacheKey(key);
+  const ck = canonKey(key);
   if (dirCache.has(ck)) {
     entries.value = dirCache.get(ck);
     observeCovers();
@@ -303,8 +287,8 @@ const toggleFavorite = async () => {
 };
 
 const openVideo = async (entry) => {
-  const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
-  const id = await calculateHash(key);
+  const key = canonKey(entry.key);
+  const id = await itemId(key);
   router.push({
     path: `/video/${id}`,
     query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name, playlist: "1" },
@@ -312,8 +296,8 @@ const openVideo = async (entry) => {
 };
 
 const openImage = async (entry) => {
-  const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
-  const id = await calculateHash(key);
+  const key = canonKey(entry.key);
+  const id = await itemId(key);
   router.push({
     path: `/media/${id}`,
     query: { dir: current.value?.key, path: entry.path || entry.key, name: entry.name },
@@ -337,8 +321,8 @@ const openBook = async (entry) => {
     await openImage(entry);
     return;
   }
-  const key = booksStore.platform === "windows" ? cacheKey(entry.key) : entry.key;
-  const id = await calculateHash(key);
+  const key = canonKey(entry.key);
+  const id = await itemId(key);
   router.push({
     path: `/reading/${id}`,
     query: { path: key, name: entry.name, ext: entry.ext, from: current.value.key },

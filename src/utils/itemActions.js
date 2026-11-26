@@ -10,7 +10,7 @@ import {
   canonKey,
   touchLibrary,
 } from "../store/browserCache";
-import { calculateHash } from "./utils";
+import { itemId } from "./itemKey";
 import { deleteFileData } from "./bookData";
 import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "./mediaScan";
 import {
@@ -129,15 +129,15 @@ export const useItemActions = ({ onDeleted } = {}) => {
     setMenuError("");
     try {
       await fsRemove(path, { recursive: true });
-      const coverKey = canonKey(item.key || path);
-      const id = await calculateHash(canonKey(path));
+      const coverCacheKey = canonKey(item.key || path);
+      const id = await itemId(path);
       try {
         await deleteFileData(id);
       } catch (error) {
         console.error("cover cache cleanup failed:", error);
       }
-      delete covers[coverKey];
-      delete coverFailed[coverKey];
+      delete covers[coverCacheKey];
+      delete coverFailed[coverCacheKey];
       dirCache.clear();
       closeContextMenu();
       notification.success({ title: "已删除", content: `「${item.name}」已永久删除`, duration: 2200 });

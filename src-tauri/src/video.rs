@@ -1,13 +1,13 @@
 //! Android 原生视频播放 + 封面抓帧命令层。
 //!
-//! 镜像桌面端 `mpv_*` 命令的完整语义（play/set_bounds/pause/seek/volume/speed/
-//! stop/release/get_state/pool_info/grab_frame），让前端 `VideoPlayer.vue` 与
+//! 镜像桌面端 `mpv_*` 命令的语义（play/set_bounds/pause/seek/volume/speed/
+//! stop/release/get_state/grab_frame），让前端 `VideoPlayer.vue` 与
 //! `bookData.js` 只需按 platform 切换命令前缀即可复用全部 UI 与轮询逻辑。
 //!
 //! 实现：每个命令经 `PluginHandle` 桥接到 Kotlin `VideoPlugin`（ExoPlayer 池 +
 //! TextureView 叠加 + 状态缓存 + MediaMetadataRetriever 抓帧）。非 Android
-//! 平台统一返回 `Err("video is Android-only")`，与 mpv 命令在非 Windows 的
-//! 行为对称。
+//! 平台由前端按前缀分流不会调用；作为兜底，部分命令返回默认值、部分返回
+//! `Err("video is Android-only")`。
 
 use tauri::AppHandle;
 #[cfg(target_os = "android")]
@@ -27,14 +27,6 @@ pub struct VideoState {
     speed: f64,
     path: String,
     codec: Option<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoSlotInfo {
-    exists: bool,
-    child: Option<u64>,
-    valid: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -351,25 +343,6 @@ pub async fn video_get_state(app: AppHandle, id: usize) -> Result<VideoState, St
             path: String::new(),
             codec: None,
         })
-    }
-}
-
-/// 播放池诊断（对齐 mpv_pool_info）。
-#[tauri::command]
-pub async fn video_pool_info(app: AppHandle) -> Result<Vec<VideoSlotInfo>, String> {
-    #[cfg(target_os = "android")]
-    {
-        let handle = app.state::<VideoAccess<tauri::Wry>>();
-        let raw = handle
-            .0
-            .run_mobile_plugin::<Vec<VideoSlotInfo>>("poolInfo", "")
-            .map_err(|e| e.to_string())?;
-        Ok(raw)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        Ok(Vec::new())
     }
 }
 

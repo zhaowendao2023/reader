@@ -1,5 +1,5 @@
 //! Tag commands: a shared tag vocabulary (`tags`) plus item→tag links
-//! (`item_tags`). Links hang off `items.id` (= sha256(lowercased path)), which
+//! (`item_tags`). Links hang off `items.id` (= sha256(canonicalized path)), which
 //! is stable across rescan upserts, so tags survive re-indexing; the FKs
 //! cascade so removing a favorite subtree or deleting a tag never leaves
 //! orphan rows.

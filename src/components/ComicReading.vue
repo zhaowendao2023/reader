@@ -1,7 +1,4 @@
 <script setup>
-import { writeFile } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
-import { BaseDirectory } from "@tauri-apps/api/path";
 import { getComic } from "../utils/bookData";
 import { getProgress } from "../utils/progress";
 import { useSettings } from "../store/settings";
@@ -85,7 +82,6 @@ const onImgLoad = (i, event) => {
         maxPage: maxPageMs.value,
         loaded: loadedCount.value,
       };
-      saveTiming({ ...loadTiming.value });
     });
   }
 };
@@ -229,19 +225,6 @@ onUnmounted(() => {
   if (sliderTimer) clearTimeout(sliderTimer);
   book.value?.destroy?.();
 });
-
-const saveTiming = async (timing) => {
-  try {
-    const testPath = await invoke("get_test_file");
-    if (!testPath) return;
-    const content = new TextEncoder().encode(
-      JSON.stringify({ file: testPath, ...timing, at: new Date().toISOString() })
-    );
-    await writeFile("cover-cache/timing.json", content, { baseDir: BaseDirectory.AppData });
-  } catch (error) {
-    console.error("写入计时失败:", error);
-  }
-};
 
 defineExpose({ left, right, jump, slider });
 </script>

@@ -5,6 +5,7 @@ import { basename, extname, BaseDirectory } from '@tauri-apps/api/path';
 import { isImage, isVideo, joinPath, extOf } from './media';
 import { workerDownscale } from './coverWorkerPool';
 import { recordTiming, maybeFlushTiming } from './coverTiming';
+import { canonKey, itemId } from './itemKey';
 
 export const getBookInfo = async (path) => {
   const ext = await extname(path)
@@ -13,11 +14,7 @@ export const getBookInfo = async (path) => {
 }
 
 // 封面：内存缓存 -> 磁盘缩略图缓存(v5, jpeg/webp + index.json) -> 从源文件读取（读后自动落盘，透明无感）
-const isWindows = /Windows/i.test(navigator.userAgent)
-const coverKey = (path) => (isWindows ? path.toLowerCase() : path)
-
 const coverCache = new Map()
-const coverHashCache = new Map()
 const coverPending = new Map()
 
 const CACHE_VERSION = 5
@@ -34,18 +31,12 @@ const LEGACY_V4_COVER_DIR = 'cover-cache/v4'
 // 600 长边（424 宽）在 150% 屏上覆盖 ~283px 卡片、在 100% 屏上覆盖 ~424px 卡片，
 // 像素量仅 400 的 2.25 倍（缓存约翻倍）；800 只对 200% 缩放 + 最宽卡片有必要。
 const THUMB_MAX_EDGE = 600
-const WEBP_QUALITY = 0.85
 // v5 起缓存缩略图改用 JPEG：真机实测 WebView 解码 600px 时
 // JPEG（libjpeg-turbo SIMD）比 WebP 快 ~3.3x（webp 4.9~8.1ms vs jpeg 1.3~2.3ms），
 // 且 600px 下两者体积几乎相等（42~84KB vs 44~78KB），无大小代价。
 // 热路径每次封面解码省 ~4ms，滚动时主线程解码卡顿明显减少。
 const JPEG_QUALITY = 0.85
-const COLLAGE_WIDTH = 400
-const COLLAGE_HEIGHT = 566
-const COLLAGE_MAX_ITEMS = 4
-// 系列拼图素材收集深度：允许 group → … → 素材目录最多 4 层嵌套。
-// 之前是 2，深层系列（系列 → 季 → 集 → 文件）的素材收集不到，
-// 拼图结果为空导致三层以上文件夹没有封面。
+// 系列封面收集预算：允许 group → … → 素材目录最多 4 层嵌套、最多访问 64 个目录。
 const COLLAGE_DEPTH_LIMIT = 4
 const COLLAGE_VISIT_LIMIT = 64
 
@@ -63,15 +54,8 @@ const mimeForImage = (name) => {
   }[ext] || ""
 }
 
-const getCoverId = async (path) => {
-  const key = coverKey(path)
-  let hash = coverHashCache.get(key)
-  if (!hash) {
-    hash = await calculateHash(key)
-    coverHashCache.set(key, hash)
-  }
-  return hash
-}
+// 封面 id 与 items.id 同源（itemId 内含路径归一化与 Promise 缓存）。
+const getCoverId = async (path) => itemId(path)
 const coverDirFor = (id) => `${COVER_ROOT}/${id}`
 
 let manifest = null
@@ -154,10 +138,10 @@ const safeStat = async (path) => {
 // 会话级 stat 缓存：源文件在短时间内不会变（外部修改由重扫/删除流程感知），
 // 缓存 stat 结果避免每张封面都重复 stat 一次大文件——手机存储上 stat 很贵，
 // 是「进入已缓存文件夹时封面加载慢」的主要开销之一。
-const statCache = new Map(); // coverKey -> { value: Promise<stat|null>, expire }
+const statCache = new Map(); // canonKey -> { value: Promise<stat|null>, expire }
 const STAT_TTL_MS = 60_000;
 const cachedStat = async (path) => {
-  const key = coverKey(path)
+  const key = canonKey(path)
   const hit = statCache.get(key)
   if (hit && hit.expire > Date.now()) return hit.value
   const p = safeStat(path)
@@ -355,7 +339,7 @@ export const loadDiskCover = async (path) => {
     const tE = performance.now()
     const blob = await readDiskCoverBlob(path)
     if (!blob) return null
-    const key = coverKey(path)
+    const key = canonKey(path)
     const url = URL.createObjectURL(blob)
     coverCache.set(key, url)
     recordTiming("enter.load", performance.now() - tE)
@@ -398,28 +382,39 @@ const saveDiskCover = async (path, blob) => {
   })
 }
 
-export const getBookCover = async (path) => {
-  const key = coverKey(path)
+const cacheAndSaveCover = (path, key, blob) => {
+  const url = URL.createObjectURL(blob)
+  coverCache.set(key, url)
+  saveDiskCover(path, blob).catch((error) => {
+    console.error("封面缓存写入失败:", error)
+  })
+  return url
+}
+
+// 漫画/EPUB 封面：打开压缩包取封面，随后立即释放打开器。
+const extractBookCover = async (path, key) => {
+  const tO = performance.now()
+  const book = await openFile(path)
+  recordTiming("cover.open", performance.now() - tO)
+  try {
+    return cacheAndSaveCover(path, key, await book.getCover())
+  } finally {
+    await book.destroy?.()
+  }
+}
+
+// 通用封面入口：comic 走开包解析，其余媒体按 kind 分发提取；
+// 内存缓存、pending 去重与磁盘落盘对所有类型共用同一套流程。
+export const getCover = async (path, kind = "comic") => {
+  const key = canonKey(path)
   if (coverCache.has(key)) return coverCache.get(key)
   if (coverPending.has(key)) return coverPending.get(key)
   const pending = (async () => {
     const diskUrl = await loadDiskCover(path)
     if (diskUrl) return diskUrl
-    const tO = performance.now()
-    const book = await openFile(path)
-    recordTiming("cover.open", performance.now() - tO)
-    let blob
-    try {
-      blob = await book.getCover()
-      const url = URL.createObjectURL(blob)
-      coverCache.set(key, url)
-      saveDiskCover(path, blob).catch((error) => {
-        console.error("封面缓存写入失败:", error)
-      })
-      return url
-    } finally {
-      await book.destroy?.()
-    }
+    if (kind === "comic") return await extractBookCover(path, key)
+    const blob = await extractMediaCover(path, kind)
+    return blob ? cacheAndSaveCover(path, key, blob) : null
   })()
   coverPending.set(key, pending)
   try {
@@ -429,7 +424,9 @@ export const getBookCover = async (path) => {
   }
 }
 
-/* ===== 媒体封面提取（视频帧 / 图包首图 / 系列拼图） ===== */
+export const getBookCover = (path) => getCover(path, "comic")
+
+/* ===== 媒体封面提取（视频帧 / 图包首图 / 系列封面） ===== */
 
 const readImageBlob = async (path) => {
   const bytes = await readFile(path)
@@ -515,7 +512,7 @@ const extractFirstMediaInDir = async (dir) => {
 // 写入内存缓存并落盘，供拼图内联提取子项封面时复用。
 const seedCover = (path, blob) => {
   if (!blob) return
-  const key = coverKey(path)
+  const key = canonKey(path)
   if (!coverCache.has(key)) coverCache.set(key, URL.createObjectURL(blob))
   saveDiskCover(path, blob).catch((error) => {
     console.error("封面缓存写入失败:", error)
@@ -577,39 +574,6 @@ const extractMediaCover = async (path, kind) => {
   }
 }
 
-// 通用封面入口：漫画保持原链路，其余媒体按 kind 分发提取。
-export const getCover = async (path, kind = "comic") => {
-  if (kind === "comic") return getBookCover(path)
-  const key = coverKey(path)
-  if (coverCache.has(key)) return coverCache.get(key)
-  if (coverPending.has(key)) return coverPending.get(key)
-  const pending = (async () => {
-    const diskUrl = await loadDiskCover(path)
-    if (diskUrl) return diskUrl
-    const blob = await extractMediaCover(path, kind)
-    if (!blob) return null
-    const url = URL.createObjectURL(blob)
-    coverCache.set(key, url)
-    saveDiskCover(path, blob).catch((error) => {
-      console.error("封面缓存写入失败:", error)
-    })
-    return url
-  })()
-  coverPending.set(key, pending)
-  try {
-    return await pending
-  } finally {
-    coverPending.delete(key)
-  }
-}
-
-export const peekCover = (path) => coverCache.get(coverKey(path)) || null;
-
-export const clearCoverCache = () => {
-  for (const url of coverCache.values()) URL.revokeObjectURL(url)
-  coverCache.clear()
-}
-
 export const getComic = async (path) => {
   const startTime = performance.now();
   const book = await openFile(path)
@@ -624,15 +588,8 @@ export const getComic = async (path) => {
     }
   }
 }
-export const getEPUB = async (path) => {
-  const book = await openFile(path)
-  return book
-}
-
-export const getMOBI = async (path) => {
-  const book = await openFile(path)
-  return book
-}
+export const getEPUB = (path) => openFile(path)
+export const getMOBI = getEPUB
 
 export const clearLoadDate = async () => {
   if (manifestTimer) {

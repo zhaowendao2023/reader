@@ -16,10 +16,10 @@
 | 位置 | 职责 |
 |---|---|
 | `src/main.js` | 应用入口；Android 返回键路由栈逻辑 |
-| `src/router/index.js` | 路由表；`/mpv-test` 仅在 dev 注册 |
+| `src/router/index.js` | 路由表 |
 | `src/components/` | 视图与交互：`LayOut`（外壳/导航）、`Home`（全量聚合）、`Display`（收藏分组）、`FileBrowser`、`SearchPage`、`TagBrowse`、`Settings`、`ComicReading`/`EpubReading`/`MobiReading`、`VideoPlayer`、`MediaViewer`、`MediaPack` |
-| `src/js/` | 格式解析：`read.js`（打开入口）、`comic-book.js`、`epub.js`、`mobi.js`、`fb2.js`；`vendor/fflate.js` 供 MOBI 解压 |
-| `src/utils/` | 数据与性能：`bookData.js`（封面缓存/提取）、`mediaScan.js`（扫描 + 索引）、`progress.js`、`itemActions.js` |
+| `src/js/` | 格式解析：`read.js`（打开入口）、`comic-book.js`、`epub.js`、`mobi.js`；`vendor/fflate.js` 供 MOBI 解压 |
+| `src/utils/` | 数据与性能：`itemKey.js`（路径 key 与 `items.id` 的唯一入口）、`bookData.js`（封面缓存/提取）、`mediaScan.js`（扫描 + 索引）、`progress.js`、`itemActions.js` |
 | `src/store/` | Pinia：`loadBooks`（书库/收藏夹/主题）、`settings`（偏好）、`tags`、`browserCache`（目录/封面/滚动缓存） |
 | `src-tauri/src/` | `lib.rs`（命令注册）、`db.rs`（SQLite 与迁移）、`sync.rs`（索引/搜索）、`tags.rs`、`mpv.rs`（Windows 播放）、`video.rs`（Android 桥接）、`import.rs`（旧 `store.bin` 迁移）、`paths.rs` |
 | `src-tauri/migrations/` | 迁移 SQL：items/progress（v1）、tags（v3）、tag kind（v4） |
@@ -56,7 +56,6 @@
 2. `assetProtocol.scope.allow` 仍含 `"**"`，`capabilities/default.json` 是 `fs:read-all`/`write-all` + scope `"**"`，CSP 白名单偏宽（含模板残留域名）。
 3. 无 CI；回归靠 `scripts/` 下的 CDP 脚本与人工走查。Rust 侧有单元测试（`cargo test`）。
 4. 封面缓存无容量上限；EPUB/MOBI 未做虚拟化；跨会话无 zip/spine 缓存。
-5. `fb2.js` 解析器在 `read.js` 可达，但路由/索引未接（`COMIC_EXTS` 不含 fb2），实际不可用。
 
 ## 建议阅读顺序
 

@@ -23,7 +23,6 @@ declare module 'vue' {
     MediaPack: typeof import('./src/components/MediaPack.vue')['default']
     MediaViewer: typeof import('./src/components/MediaViewer.vue')['default']
     MobiReading: typeof import('./src/components/MobiReading.vue')['default']
-    MpvTest: typeof import('./src/components/MpvTest.vue')['default']
     NConfigProvider: typeof import('naive-ui')['NConfigProvider']
     NEllipsis: typeof import('naive-ui')['NEllipsis']
     NNotificationProvider: typeof import('naive-ui')['NNotificationProvider']

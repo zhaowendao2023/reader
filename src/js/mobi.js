@@ -478,11 +478,6 @@ const getFont = async (buf, unzlib) => {
     return array
 }
 
-// export const isMOBI = async file => {
-//     const magic = getString(await file.slice(60, 68).arrayBuffer())
-//     return magic === 'BOOKMOBI'// || magic === 'TEXtREAd'
-// }
-
 export const isMOBI = async path => {
     return path.endsWith('.mobi')
 }

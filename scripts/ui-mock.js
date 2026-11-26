@@ -103,8 +103,6 @@
   const invoke = async (cmd, args = {}, options = {}) => {
     switch (cmd) {
       // ===== 业务命令 =====
-      case "get_test_file":
-        return "";
       case "list_drives":
         return ["F:\\"];
 
@@ -295,7 +293,6 @@
       case "mpv_stop":
       case "mpv_stop_all":
       case "mpv_release":
-      case "mpv_pool_info":
         return null;
 
       default:

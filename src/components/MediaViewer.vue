@@ -241,12 +241,10 @@ const init = async () => {
         .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true }))
         .map((e) => ({ name: e.name, path: joinPath(dir, e.name) }));
       images.value = list;
-      const norm = (p) =>
-        booksStore.platform === "windows" ? String(p).toLowerCase() : String(p);
       let idx = 0;
       let singleHit = false;
       if (typeof single === "string" && single) {
-        const found = list.findIndex((it) => norm(it.path) === norm(single));
+        const found = list.findIndex((it) => canonKey(it.path) === canonKey(single));
         if (found >= 0) {
           idx = found;
           singleHit = true;

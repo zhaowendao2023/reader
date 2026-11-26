@@ -1,6 +1,4 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-// use std::path::PathBuf;
-// use std::time::Instant;
 mod db;
 mod import;
 mod mpv;
@@ -12,12 +10,6 @@ mod video;
 use std::sync::Arc;
 
 use tauri::Manager;
-// use tokio::fs::File;
-// use tokio::io::{AsyncReadExt, BufReader};
-#[tauri::command]
-fn get_test_file() -> Option<String> {
-    std::env::var("READER_TEST_FILE").ok()
-}
 
 /// Reads and inflates a single archive entry on the Rust side, so CBZ image
 /// loading avoids many small plugin-fs reads plus JS-side decompression.
@@ -40,7 +32,7 @@ async fn read_cbz_entry(path: String, name: String) -> Result<tauri::ipc::Respon
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CoverCacheEntry {
-    /// 64-char sha256 hex of the lowercased source path（与 JS calculateHash 一致）。
+    /// 64-char sha256 hex of the normalized source path（与前端 utils/itemKey 的 itemId 一致）。
     /// Rust 侧当纯 id 用，仅允许 [0-9a-f]{64}，杜绝路径穿越。
     id: String,
     /// 缓存文件名白名单：cover.webp | cover.jpg | cover.raw
@@ -302,38 +294,6 @@ fn read_dir_meta(path: String) -> Result<DirMeta, String> {
     Ok(DirMeta { self_mtime, entries })
 }
 
-// const CHUNK_SIZE: usize = 1024 * 1024; // 1MB
-
-// #[tauri::command]
-// async fn read_file_as_bytes() -> Result<Vec<u8>, String> {
-//     // 记录开始时间
-//     let start = Instant::now();
-//     let path = PathBuf::from("F:\\comics\\[WaterRing] Chiori (Genshin Impact) [Decensored].cbz");
-
-//     // 内存映射
-//     let file = File::open(&path).await.map_err(|e| e.to_string())?;
-//     let mut reader = BufReader::new(file);
-
-//     let mut buffer = vec![0; CHUNK_SIZE];
-//     let mut chunks = Vec::new();
-
-//     loop {
-//         let n = reader.read(&mut buffer).await.map_err(|e| e.to_string())?;
-//         if n == 0 {
-//             break;
-//         }
-
-//         // 截取实际读取部分
-//         let chunk = buffer[..n].to_vec();
-//         chunks.push(chunk);
-//     }
-
-//     // 计算耗时
-//     let duration = start.elapsed();
-//     println!("读取耗时: {:?}", duration);
-//     Ok(chunks)
-// }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -398,7 +358,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_test_file,
             read_cbz_entry,
             read_cover_cache_batch,
             sync::sync_favorite,
@@ -435,13 +394,10 @@ pub fn run() {
             mpv::mpv_get_volume,
             mpv::mpv_set_volume,
             mpv::mpv_set_speed,
-            mpv::mpv_volume_debug,
             mpv::mpv_stop,
             mpv::mpv_stop_all,
             mpv::mpv_release,
             mpv::mpv_get_state,
-            mpv::mpv_pool_info,
-            mpv::mpv_grab_pool_info,
             mpv::mpv_grab_frame,
             video::video_play,
             video::video_set_bounds,
@@ -454,7 +410,6 @@ pub fn run() {
             video::video_stop_all,
             video::video_release,
             video::video_get_state,
-            video::video_pool_info,
             video::video_grab_frame,
             video::video_set_screen_brightness,
             video::video_reset_screen_brightness

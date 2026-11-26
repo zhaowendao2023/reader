@@ -270,10 +270,6 @@ mod imp {
             self.set_bounds(0, 0, 0, 0)
         }
 
-        fn child_handle(&self) -> isize {
-            self.child.0 as isize
-        }
-
         fn needs_recreate(&self) -> bool {
             let window_valid = unsafe { IsWindow(Some(self.child)).as_bool() };
             if !window_valid {
@@ -349,14 +345,6 @@ mod imp {
             let speed = speed.clamp(0.5, 2.0);
             self.command_string(&format!("set speed {speed:.2}"))?;
             Ok(self.speed())
-        }
-
-        fn debug_volume(&self) -> (f64, Option<String>, Option<String>) {
-            (
-                self.volume(),
-                self.get_property_string("volume"),
-                self.get_property_string("mute"),
-            )
         }
 
         /// Start a paused load of `path`. The caller must give the pump loop
@@ -527,11 +515,6 @@ mod imp {
             self.pump(move |o| o.set_speed(speed))
         }
 
-        pub fn debug_volume(&self) -> (f64, Option<String>, Option<String>) {
-            self.pump(|o| Ok(o.debug_volume()))
-                .unwrap_or((100.0, None, None))
-        }
-
         pub fn set_bounds(&self, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
             self.pump(move |o| o.set_bounds(x, y, width, height))
         }
@@ -542,10 +525,6 @@ mod imp {
 
         pub fn stop(&self) -> Result<(), String> {
             self.pump(|o| o.stop())
-        }
-
-        pub fn child_handle(&self) -> isize {
-            self.objects.child_handle()
         }
 
         pub fn needs_recreate(&self) -> bool {
@@ -933,22 +912,6 @@ pub struct MpvState {
     codec: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MpvVolumeDebug {
-    volume: f64,
-    raw: Option<String>,
-    mute: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MpvSlotInfo {
-    exists: bool,
-    child: Option<u64>,
-    valid: bool,
-}
-
 #[tauri::command]
 pub async fn mpv_play(
     app: AppHandle,
@@ -1185,44 +1148,6 @@ pub async fn mpv_set_speed(app: AppHandle, id: usize, speed: f64) -> Result<f64,
 }
 
 #[tauri::command]
-pub async fn mpv_volume_debug(app: AppHandle, id: usize) -> Result<MpvVolumeDebug, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            if let Some(player) = guard
-                .get_mut(id)
-                .ok_or_else(|| format!("mpv slot {id} missing"))?
-                .as_mut()
-            {
-                let (volume, raw, mute) = player.debug_volume();
-                Ok(MpvVolumeDebug { volume, raw, mute })
-            } else {
-                Ok(MpvVolumeDebug {
-                    volume: 100.0,
-                    raw: None,
-                    mute: None,
-                })
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (app, id);
-        Ok(MpvVolumeDebug {
-            volume: 100.0,
-            raw: None,
-            mute: None,
-        })
-    }
-}
-
-#[tauri::command]
 pub async fn mpv_stop(app: AppHandle, id: usize) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -1346,95 +1271,6 @@ pub async fn mpv_get_state(app: AppHandle, id: usize) -> Result<MpvState, String
             path: None,
             codec: None,
         })
-    }
-}
-
-#[tauri::command]
-pub async fn mpv_pool_info(app: AppHandle) -> Result<Vec<MpvSlotInfo>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let handle = app.state::<MpvPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let guard = handle
-                .lock()
-                .map_err(|_| "mpv state lock poisoned".to_string())?;
-            Ok(guard
-                .iter()
-                .map(|slot| match slot {
-                    Some(player) => {
-                        let child = player.child_handle() as u64;
-                        MpvSlotInfo {
-                            exists: true,
-                            child: Some(child),
-                            valid: unsafe {
-                                windows::Win32::UI::WindowsAndMessaging::IsWindow(
-                                    Some(HWND(child as usize as *mut _)),
-                                )
-                                .as_bool()
-                            },
-                        }
-                    }
-                    None => MpvSlotInfo {
-                        exists: false,
-                        child: None,
-                        valid: false,
-                    },
-                })
-                .collect::<Vec<_>>())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = app;
-        Ok(Vec::new())
-    }
-}
-
-/// Diagnostics for the frame-grab pool: per-slot instance existence and child
-/// window validity, mirroring [`mpv_pool_info`] for the playback pool. Lets
-/// batch cover extraction verify that instances are reused across grabs.
-#[tauri::command]
-pub async fn mpv_grab_pool_info(app: AppHandle) -> Result<Vec<MpvSlotInfo>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let handle = app.state::<GrabPool>().0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let guard = handle
-                .lock()
-                .map_err(|_| "mpv grab pool lock poisoned".to_string())?;
-            Ok(guard
-                .iter()
-                .map(|slot| match slot {
-                    Some(player) => {
-                        let child = player.child_handle() as u64;
-                        MpvSlotInfo {
-                            exists: true,
-                            child: Some(child),
-                            valid: unsafe {
-                                windows::Win32::UI::WindowsAndMessaging::IsWindow(
-                                    Some(HWND(child as usize as *mut _)),
-                                )
-                                .as_bool()
-                            },
-                        }
-                    }
-                    None => MpvSlotInfo {
-                        exists: false,
-                        child: None,
-                        valid: false,
-                    },
-                })
-                .collect::<Vec<_>>())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = app;
-        Ok(Vec::new())
     }
 }
 

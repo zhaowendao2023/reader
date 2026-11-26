@@ -25,9 +25,6 @@ export const displayCacheGet = (path) => {
   return e;
 };
 
-/** 只查不改（缩略图占位判断用，不产生续命副作用）。 */
-export const displayCachePeek = (path) => cache.get(path) || null;
-
 /** 写入（覆盖旧条目并续命），超预算自动淘汰。 */
 export const displayCachePut = (path, url, size) => {
   const prev = cache.get(path);

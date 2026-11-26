@@ -6,7 +6,7 @@ import { useBooks } from "../store/loadBooks";
 import { useSettings } from "../store/settings";
 import { VIDEO_EXTS, extOf, joinPath } from "../utils/media";
 import { covers, canonKey, dirCache, mediaDirKey, enqueueCover } from "../store/browserCache";
-import { calculateHash } from "../utils/utils";
+import { itemId } from "../utils/itemKey";
 import { flushProgress, getVideoProgressEntry, getVideoProgressMap, setVideoProgress } from "../utils/progress";
 import { closeContextMenu, openContextMenu, openGenericMenu } from "../utils/contextMenu";
 import { useItemActions } from "../utils/itemActions";
@@ -115,7 +115,6 @@ let resumeAt = null;
 let resumeFor = null;
 let lastSavedItem = null;
 let lastSavedPos = null;
-const itemIdCache = new Map();
 const playlistMap = new Map();
 const rebuildPlaylistMap = () => {
   playlistMap.clear();
@@ -197,13 +196,8 @@ const syncHole = () => {
   hole.h = Math.round(r.height);
 };
 
-const itemIdOf = async (path) => {
-  const key = canonKey(path);
-  if (itemIdCache.has(key)) return itemIdCache.get(key);
-  const id = await calculateHash(key);
-  itemIdCache.set(key, id);
-  return id;
-};
+// itemId 自带路径归一化与 Promise 缓存，不必再本地缓存一层。
+const itemIdOf = (path) => itemId(path);
 
 const currentStateMatches = (s) => {
   if (!s || typeof s.path !== "string" || !s.path) return false;

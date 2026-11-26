@@ -4,7 +4,7 @@ import { useBooks } from "../store/loadBooks";
 import { useSettings } from "../store/settings";
 import { scanFavoriteTree } from "../utils/mediaScan";
 import { IMAGE_EXTS, VIDEO_EXTS, extOf } from "../utils/media";
-import { calculateHash } from "../utils/utils";
+import { itemId } from "../utils/itemKey";
 import { createScrollRestorer } from "../utils/scrollAnchor";
 import { covers, canonKey, prefetchCovers, stopPrefetch } from "../store/browserCache";
 import { useLazyCovers } from "../utils/lazyCovers";
@@ -176,8 +176,8 @@ const goBack = () => {
 
 const openVideo = async (file) => {
   persistPackAnchorBeforeNav();
-  const key = booksStore.platform === "windows" ? file.path.toLowerCase() : file.path;
-  const id = await calculateHash(key);
+  const key = canonKey(file.path);
+  const id = await itemId(key);
   router.push({
     path: `/video/${id}`,
     query: { dir: dir.value, path: file.path, name: file.name, playlist: "1" },
@@ -186,8 +186,8 @@ const openVideo = async (file) => {
 
 const openImage = async (file) => {
   persistPackAnchorBeforeNav();
-  const key = booksStore.platform === "windows" ? file.path.toLowerCase() : file.path;
-  const id = await calculateHash(key);
+  const key = canonKey(file.path);
+  const id = await itemId(key);
   router.push({
     path: `/media/${id}`,
     query: { dir: dir.value, path: file.path, name: file.name },
@@ -201,15 +201,15 @@ const playAll = () => {
 const viewImages = async () => {
   if (!images.value.length) return;
   persistPackAnchorBeforeNav();
-  const key = booksStore.platform === "windows" ? String(dir.value).toLowerCase() : dir.value;
-  const id = await calculateHash(key);
+  const key = canonKey(dir.value);
+  const id = await itemId(key);
   router.push({ path: `/media/${id}`, query: { dir: dir.value, name: name.value } });
 };
 
 const openPack = async (item) => {
   persistPackAnchorBeforeNav();
-  const key = booksStore.platform === "windows" ? item.path.toLowerCase() : item.path;
-  const id = await calculateHash(key);
+  const key = canonKey(item.path);
+  const id = await itemId(key);
   router.push({ path: `/media-pack/${id}`, query: { dir: item.path, name: item.name } });
 };
 

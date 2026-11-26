@@ -4,6 +4,10 @@
 import { reactive } from "vue";
 import { getCover } from "../utils/bookData";
 import { recordTiming, maybeFlushTiming } from "../utils/coverTiming";
+import { canonKey } from "../utils/itemKey";
+
+// 统一 key 实现放在 utils/itemKey，这里 re-export 保持既有 import 路径。
+export { canonKey };
 
 // ============ 目录列表缓存 ============
 export const dirCache = new Map();
@@ -40,7 +44,7 @@ const failedRecently = (nk) => {
 };
 
 // ============ 封面加载队列 ============
-// foreground（正在浏览的文件夹/可视区域）优先，最多 6 个并发；
+// foreground（正在浏览的文件夹/可视区域）优先，最多 8 个并发；
 // background（后台预热）只在没有前景任务时以 3 个并发运行。
 const extractQueue = []; // { key, priority, kind }
 const extractActive = new Set(); // 正在提取中的 key（并发数的唯一依据）
@@ -48,9 +52,8 @@ const queuedKeys = new Set(); // 已入队的规范化 key，避免重复入队
 const FG_LIMIT = 8;
 const BG_LIMIT = 3;
 
-// Windows 下路径大小写不敏感、斜杠可混用，统一成小写+反斜杠的规范化 key，
+// Windows 下路径大小写不敏感、斜杠可混用，canonKey 统一成小写+反斜杠，
 // 保证预热/浏览/队列各处拿到的键一致，避免封面显示不出来或重复加载。
-export const canonKey = (key) => (isWindows ? key.toLowerCase().replace(/\//g, "\\") : key);
 
 // 图包查看器 / 播放列表共用的原始 readDir 缓存 key：与文件浏览器共用同一个
 // Map（删除文件后 itemActions 的 dirCache.clear() 一并失效），但用命名空间
@@ -231,5 +234,3 @@ export const enqueueCover = (key, priority = true, kind = "comic") => {
   return "queued";
 };
 
-// 记录平台（Windows 下路径大小写不敏感），canonKey 使用
-const isWindows = /Windows/i.test(navigator.userAgent);

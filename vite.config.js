@@ -16,7 +16,7 @@ export default defineConfig(async () => ({
         'vue-router',
         'pinia'
       ],
-      dirs: ['src/utils/utils.js', 'src/utils/bookData.js'],
+      dirs: ['src/utils/bookData.js'],
       resolvers: [
         NaiveUiResolver()
       ],

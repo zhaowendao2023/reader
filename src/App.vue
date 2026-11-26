@@ -20,10 +20,7 @@
 import { useBooks } from "./store/loadBooks";
 import { useSettings } from "./store/settings";
 import { darkTheme } from "naive-ui";
-import { invoke } from "@tauri-apps/api/core";
-import router from "./router";
-import { getBookInfo, ensureCoverCache, cleanupLegacyCoverCache } from "./utils/bookData";
-import { calculateHash } from "./utils/utils";
+import { ensureCoverCache, cleanupLegacyCoverCache } from "./utils/bookData";
 import { openGenericMenu } from "./utils/contextMenu";
 import { syncSystemUiTheme } from "./utils/systemBar";
 import ContextMenu from "./components/ContextMenu.vue";
@@ -66,34 +63,11 @@ onBeforeMount(async () => {
   await booksStore.loadData();
   theme.value = await getTheme();
   await start();
-  console.log("环境变量平台:", booksStore.platform);
-  await autoOpenTestFile();
 });
 
 async function start() {
   await cleanupLegacyCoverCache();
   await ensureCoverCache();
-  console.log("cover cache initialized");
-}
-
-async function autoOpenTestFile() {
-  let testPath = null;
-  try {
-    testPath = await invoke("get_test_file");
-  } catch (error) {
-    console.error("获取测试文件失败:", error);
-    return;
-  }
-  if (!testPath) return;
-
-  try {
-    const id = await calculateHash(testPath);
-    const bookInfo = await getBookInfo(testPath);
-    const name = testPath.split(/[\\/]/).filter(Boolean).pop() || testPath;
-    await router.push({ path: `/reading/${id}`, query: { path: testPath, name, ext: bookInfo.ext } });
-  } catch (error) {
-    console.error("自动测试打开失败:", error);
-  }
 }
 </script>
 

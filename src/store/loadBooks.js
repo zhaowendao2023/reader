@@ -1,5 +1,6 @@
 import { Store } from '@tauri-apps/plugin-store';
 import { invoke } from "@tauri-apps/api/core";
+import { canonKey } from "../utils/itemKey";
 
 export const useBooks = defineStore('books', {
   state: () => ({
@@ -45,19 +46,17 @@ export const useBooks = defineStore('books', {
     async clearAll() {
       await clearLoadDate();
       await invoke('clear_library');
-      console.log('library cleared');
     },
     async addFavoriteDir(path, name) {
-      const key = this.platform === 'windows' ? path.toLowerCase().replace(/\//g, '\\') : path;
-      if (this.favoriteDirs.some((d) => d.path.toLowerCase() === key)) return;
+      const key = canonKey(path);
+      if (this.favoriteDirs.some((d) => canonKey(d.path) === key)) return;
       await invoke('add_favorite', { path, name });
       this.favoriteDirs.push({ path: key, name });
     },
     async removeFavoriteDir(path) {
       await invoke('remove_favorite', { path });
-      this.favoriteDirs = this.favoriteDirs.filter((d) =>
-        this.platform === 'windows' ? d.path.toLowerCase() !== path.toLowerCase() : d.path !== path
-      );
+      const key = canonKey(path);
+      this.favoriteDirs = this.favoriteDirs.filter((d) => canonKey(d.path) !== key);
     },
     async setCss() {
       const storeInstance = await Store.load('store.bin');

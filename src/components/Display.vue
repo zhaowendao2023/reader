@@ -4,7 +4,7 @@ import { useSettings } from "../store/settings";
 import { useUI } from "../store/ui";
 import { invoke } from "@tauri-apps/api/core";
 import { covers, canonKey, enqueueCover, prefetchCovers } from "../store/browserCache";
-import { calculateHash } from "../utils/utils";
+import { itemId } from "../utils/itemKey";
 import { isVideo } from "../utils/media";
 import { scanFavoriteTree, flattenScan, syncFavoriteToDb } from "../utils/mediaScan";
 import { entranceActive, markEntrancePlayed } from "../utils/entranceOnce";
@@ -206,14 +206,14 @@ watch(
 );
 
 const openComic = async (book) => {
-  const key = booksStore.platform === "windows" ? book.key.toLowerCase() : book.key;
-  const id = await calculateHash(key);
+  const key = canonKey(book.key);
+  const id = await itemId(key);
   router.push({ path: `/reading/${id}`, query: { path: key, name: book.name, ext: book.ext, back: "shelf" } });
 };
 
 const openVideo = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   router.push({
     path: `/video/${id}`,
     query: { dir: item.dir || currentDir.value?.path, path: item.path || item.key, name: item.name, playlist: "1" },
@@ -221,8 +221,8 @@ const openVideo = async (item) => {
 };
 
 const openImagePack = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   const p = item.path || item.key;
   router.push({
     path: `/media/${id}`,
@@ -234,8 +234,8 @@ const openImagePack = async (item) => {
 };
 
 const openMediaPack = async (item) => {
-  const key = booksStore.platform === "windows" ? item.key.toLowerCase() : item.key;
-  const id = await calculateHash(key);
+  const key = canonKey(item.key);
+  const id = await itemId(key);
   router.push({
     path: `/media-pack/${id}`,
     query: { dir: item.path || item.key, name: item.name },
