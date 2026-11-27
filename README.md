@@ -41,7 +41,7 @@ pnpm tauri dev *> tauri-dev.log 2>&1
 
 窗口加载 `http://localhost:1420`。如果日志里 Vite 已就绪、Cargo 也编译完成，但窗口始终不出现，按下面的问题排查。
 
-- **视频需要 libmpv**：Windows 端把 `libmpv-2.dll` 放到 `reader.exe` 同目录；缺失时视频与视频封面不可用。仓库不入库该 DLL，打包时由 `bundle.resources` 从 `src-tauri/libmpv-2.dll` 投放（开发期放这个位置即可，见 `docs/ARCHITECTURE.md`）；分发合规见 `src-tauri/NOTICE.md`。
+- **视频需要 libmpv**：`pnpm install` 的 `postinstall` 会自动把 `libmpv-2.dll`（约 98 MB）下载到 `src-tauri/`，带进度条；已存在且哈希匹配则跳过，网络失败只警告不阻断安装，可用 `pnpm mpv:fetch` 补下。运行时按 `reader.exe` 同目录查找该 DLL，缺失时视频与视频封面不可用。仓库不入库该 DLL，打包时由 `bundle.resources` 从 `src-tauri/libmpv-2.dll` 投放；分发合规见 `src-tauri/NOTICE.md`。
 - **需要 CDP 调试端口时**用 `scripts/dev-launch.ps1`：它会临时给 `tauri.conf.json` 注入 `--remote-debugging-port=9222`，退出后自动还原。仓库里的配置**不再保留**调试端口。
 - **Android**：需要本地生成 `src-tauri/gen/android` 工程与 Kotlin 插件；这部分不在版本库内，详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
@@ -79,6 +79,7 @@ Rename-Item tauri-dev.log tauri-dev.log.old
 
 ## 给 Agent / 新开发者的入口
 
+- **代码规范**（通用约定：分层 / 命名 / 组件与样式 / 状态 / IPC / 系统层 / 验证）：**[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md)**。
 - **项目结构速览**（组件职责 / 路由 / 数据流 / 关键坑）：**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — 新会话第一份该读的文件。
 - **测试指南**（三种路径 / CDP 驱动 / 踩坑清单 / 测试书选择）：**[`docs/TESTING.md`](docs/TESTING.md)**。
 

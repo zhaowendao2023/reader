@@ -48,7 +48,7 @@
 
 - **Windows**：视频走 `src-tauri/src/mpv.rs`，运行时按**可执行文件同目录**定位 `libmpv-2.dll`（不读环境变量，避免依赖用户侧配置）；debug 构建额外回退到 `src-tauri/`。发布包里由 `bundle.resources` 从 `src-tauri/libmpv-2.dll` 投放，该 DLL 不入库。
 
-  **获取 DLL（新机器首次打包前置）**：从 [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases/tag/2026-11-26-1eab28e7b5) 下载 `mpv-dev-lgpl-x86_64-20261126-git-1eab28e7b5.7z`（约 29 MB，解压后 DLL 约 98 MB），校验 `sha256=11a3542196c377fc2e8a1e9aa86acfd3b82ed2b738d057c238bd93e39d4847e9`，解压出的 `libmpv-2.dll` 放到 `src-tauri/`。缺失时 `tauri build` 会失败。分发合规（LGPL 声明与可替换说明）见 `src-tauri/NOTICE.md`，随包投放。
+  **获取 DLL（新机器首次打包前置）**：`pnpm install` 的 `postinstall` 会自动执行 `scripts/fetch-mpv.mjs` 下载 [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild/releases/tag/2026-11-26-1eab28e7b5) 的 `mpv-dev-lgpl-x86_64-20261126-git-1eab28e7b5.7z`（约 29 MB，解压后 DLL 约 98 MB）并解压出 `src-tauri/libmpv-2.dll`，带进度显示。脚本内写死了构建 tag、压缩包 `sha256=11a3542196c377fc2e8a1e9aa86acfd3b82ed2b738d057c238bd93e39d4847e9` 和 DLL 哈希，按 `ghfast.top` → `gh-proxy.com` → GitHub 直连的顺序回退；DLL 已存在且哈希匹配时跳过，网络失败只警告、不阻断安装。需要补下或强制重下时执行 `pnpm mpv:fetch`（追加 `-- --force` 强制）。缺失时 `tauri build` 会失败。分发合规（LGPL 声明与可替换说明）见 `src-tauri/NOTICE.md`，随包投放。
 
 - **Android**：视频走 `video.rs` → Kotlin `VideoPlugin`（ExoPlayer）；系统栏/返回键/全文件访问也是 Kotlin 插件。
 - **Android 工程不在版本库内**：`src-tauri/gen/` 被 `.gitignore` 忽略，Kotlin 实现（`SystemUiPlugin` / `AllFilesPlugin` / `VideoPlugin`）只存在于本地生成的工程。新机器要构建 Android 端，需先 `tauri android init` 并补齐这些插件源码。

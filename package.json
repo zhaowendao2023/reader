@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "postinstall": "node scripts/fetch-mpv.mjs --soft",
+    "mpv:fetch": "node scripts/fetch-mpv.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
