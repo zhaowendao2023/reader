@@ -130,9 +130,10 @@ export const useVideoSession = ({
     }
   };
 
-  const togglePause = async () => {
+  // 显式设置暂停态。双击需要「撤销首击」时必须按目标值设定：
+  // 连续两次 toggle 会读到同一份状态快照，抵消不掉。
+  const setPaused = async (paused) => {
     if (!state.value) return;
-    const paused = !state.value.paused;
     try {
       await invoke(vcmd("pause"), { id: 0, paused });
       state.value = { ...state.value, paused };
@@ -146,6 +147,11 @@ export const useVideoSession = ({
       error.value = String(e);
     }
     pokeChrome();
+  };
+
+  const togglePause = async () => {
+    if (!state.value) return;
+    await setPaused(!state.value.paused);
   };
 
   // 任意显式跳转都会取消待生效的续播位置，否则轮询会把用户刚拖到的位置又拽回去。
@@ -395,6 +401,7 @@ export const useVideoSession = ({
     prev,
     poll,
     togglePause,
+    setPaused,
     seekTo,
     seekBy,
     saveNow,

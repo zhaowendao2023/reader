@@ -67,7 +67,6 @@ let timer = null;
 let idleTimer = null;
 let chromeResizeTimer = null;
 let brightnessTimer = null;
-let stageClickTimer = null;
 let resizeRaf = null;
 let stageObserver = null;
 
@@ -166,6 +165,7 @@ const {
   prev,
   poll,
   togglePause,
+  setPaused,
   seekTo,
   seekBy,
   saveNow,
@@ -274,9 +274,22 @@ const commitSeek = () => {
 /* ===== 移动端手势：横滑进度 / 纵滑亮度音量 / 长按 2× ===== */
 const TOUCH_MOVE_THRESHOLD = 12;
 const TOUCH_DIRECTION_RATIO = 1.2;
-const LONG_PRESS_MS = 450;
+// 长按阈值取国内播放器实测区间（B 站约 300ms、华为 UX 标准 400-650ms）的偏快档，
+// 按住触发倍速时不会先愣一下。
+const LONG_PRESS_MS = 350;
 // 手势后短暂抑制合成 click/dblclick，避免滑动/长按结束时误触控制栏。
 let gestureSuppressUntil = 0;
+// 双击判定窗口：首击立即生效，窗口内的第二击交给 dblclick 合并处理。
+const DOUBLE_TAP_MS = 300;
+let lastTapAt = 0;
+let secondTapSuppressed = false;
+// 桌面首击前的暂停态：双击要按目标值撤销首击，toggle 会读到同一份快照而抵消不掉。
+let tapPausedBefore = null;
+const resetTapState = () => {
+  lastTapAt = 0;
+  secondTapSuppressed = false;
+  tapPausedBefore = null;
+};
 
 const pushBrightness = () => {
   clearTimeout(brightnessTimer);
@@ -295,9 +308,8 @@ const startTemporarySpeed = () => {
   gesture.longPressActive = true;
   gesture.restoreSpeed = playbackSpeed.value;
   gestureSuppressUntil = Date.now() + 600;
-  clearTimeout(stageClickTimer);
-  stageClickTimer = null;
-  showPlaybackHud({ type: "speed", primary: "2× 加速播放", hold: true });
+  resetTapState();
+  showPlaybackHud({ type: "speed", primary: "2× 加速播放", secondary: "横滑可快进", hold: true });
   invokeSpeed(2)
     .then((actual) => {
       if (gesture.longPressActive) playbackSpeed.value = actual;
@@ -363,9 +375,14 @@ const onStageTouchMove = (e) => {
     else return;
     gesture.moved = true;
     clearLongPressTimer();
+    // 长按已经触发 2× 后再滑动，交棒给正常的滑动手势：倍速与快进不叠加。
+    // 长按期间播放已前进，重设起点，否则松手会跳回按下的那一刻。
+    if (gesture.longPressActive) {
+      stopTemporarySpeed();
+      gesture.startPosition = Number(state.value?.position) || gesture.startPosition;
+    }
     gestureSuppressUntil = Date.now() + 500;
-    clearTimeout(stageClickTimer);
-    stageClickTimer = null;
+    resetTapState();
   }
 
   if (gesture.direction === "horizontal") {
@@ -463,6 +480,38 @@ const toggleSpeed = () => {
   pokeChrome();
 };
 
+// 平台单击语义：桌面切换暂停，移动端切换控制栏显隐（不打断播放）。
+const applyStageTap = () => {
+  if (isAndroid.value) {
+    if (chromeVisible.value) {
+      // 已显示 → 立即隐藏（不等 idle 自动隐藏）
+      chromeVisible.value = false;
+      clearTimeout(idleTimer);
+      clearTimeout(chromeResizeTimer);
+      chromeResizeTimer = setTimeout(onResize, 360);
+    } else {
+      pokeChrome();
+    }
+    return;
+  }
+  if (state.value) {
+    tapPausedBefore = state.value.paused;
+    setPaused(!tapPausedBefore);
+  }
+  pokeChrome();
+};
+
+// 撤销首击：桌面按记录值恢复暂停态，移动端再切一次控制栏即回到原状。
+const undoStageTap = () => {
+  if (isAndroid.value) {
+    applyStageTap();
+    return;
+  }
+  const before = tapPausedBefore;
+  tapPausedBefore = null;
+  if (before != null) setPaused(before);
+};
+
 const onStageClick = (e) => {
   if (gestureSuppressed()) return;
   const tag = (e.target?.tagName || "").toLowerCase();
@@ -478,31 +527,26 @@ const onStageClick = (e) => {
     pokeChrome();
     return;
   }
-  clearTimeout(stageClickTimer);
-  stageClickTimer = setTimeout(() => {
-    stageClickTimer = null;
-    if (isAndroid.value) {
-      // 移动端：单击切换悬浮栏显示/隐藏，不暂停
-      if (chromeVisible.value) {
-        // 已显示 → 立即隐藏（不等 idle 自动隐藏）
-        chromeVisible.value = false;
-        clearTimeout(idleTimer);
-        clearTimeout(chromeResizeTimer);
-        chromeResizeTimer = setTimeout(onResize, 360);
-      } else {
-        pokeChrome();
-      }
-    } else {
-      togglePause();
-      pokeChrome();
-    }
-  }, 300);
+  // 单击立即生效，不空等双击判定窗口；窗口内的第二击跳过，
+  // 由 dblclick 抵消首击副作用后再执行自己的动作。
+  const now = Date.now();
+  if (now - lastTapAt < DOUBLE_TAP_MS) {
+    secondTapSuppressed = true;
+    lastTapAt = 0;
+    return;
+  }
+  secondTapSuppressed = false;
+  lastTapAt = now;
+  applyStageTap();
 };
 
 const onStageDblClick = (e) => {
   if (gestureSuppressed()) return;
-  clearTimeout(stageClickTimer);
-  stageClickTimer = null;
+  // 仅当第二击被跳过时才需要抵消首击：慢速双击两击都已生效，净效果已归零。
+  const undoFirstTap = secondTapSuppressed;
+  // 先撤销再清状态：undoStageTap 依赖 tapPausedBefore。
+  if (undoFirstTap) undoStageTap();
+  resetTapState();
   if (isAndroid.value) {
     const r = stage.value?.getBoundingClientRect();
     const x = r?.width ? (e.clientX - r.left) / r.width : 0.5;
@@ -684,7 +728,7 @@ onUnmounted(() => {
   clearTimeout(idleTimer);
   clearTimeout(chromeResizeTimer);
   clearTimeout(brightnessTimer);
-  clearTimeout(stageClickTimer);
+  resetTapState();
   clearLongPressTimer();
   hidePlaybackHud();
   gesture.active = false;
@@ -906,6 +950,11 @@ onUnmounted(() => {
         </div>
       </div>
     </footer>
+
+    <!-- 控制栏隐藏时的迷你进度条：只读、不拦截点击，让用户随时知道播到哪 -->
+    <div v-if="!chromeVisible && state?.duration" class="mini-seek" aria-hidden="true">
+      <span class="mini-seek-fill" :style="{ width: seekFill + '%' }"></span>
+    </div>
   </div>
 </template>
 
@@ -1324,6 +1373,25 @@ onUnmounted(() => {
   &.chrome-hidden {
     transform: translateY(14px);
   }
+}
+
+/* 控制栏隐藏期间的迷你进度条：贴底一条，不参与命中测试 */
+.mini-seek {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+.mini-seek-fill {
+  display: block;
+  height: 100%;
+  background: var(--p-accent);
+  transition: width 0.2s linear;
 }
 
 .bar {
