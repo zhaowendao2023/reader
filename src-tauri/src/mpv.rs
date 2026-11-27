@@ -135,23 +135,30 @@ mod imp {
     unsafe impl Send for MpvObjects {}
     unsafe impl Sync for MpvObjects {}
 
+    /// 设计约束：libmpv 固定与可执行文件同目录，安装包由 `bundle.resources`
+    /// 把它放在那里。以 exe 位置为基准而不是进程工作目录，避免从快捷方式、
+    /// 文件关联或任意目录启动时路径失效。
     fn locate_mpv_dll() -> Result<PathBuf, String> {
-        if let Some(path) = std::env::var_os("READER_MPV_DLL") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Ok(path);
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("resolve current exe failed: {e}"))?;
+        let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+        let candidate = dir.join("libmpv-2.dll");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        // 开发期 `tauri dev`/`cargo test` 的可执行文件在 target/ 下，DLL 留在
+        // 源码目录：直接指过去，省掉手工拷贝。只在 debug 构建里编译。
+        #[cfg(debug_assertions)]
+        {
+            let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("libmpv-2.dll");
+            if dev.exists() {
+                return Ok(dev);
             }
         }
-        if let Ok(exe) = std::env::current_exe() {
-            let candidate = exe
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("libmpv-2.dll");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-        Err("libmpv-2.dll not found; copy it next to reader.exe or set READER_MPV_DLL".to_string())
+        Err(format!(
+            "libmpv-2.dll not found next to {}",
+            exe.display()
+        ))
     }
 
     unsafe fn symbol<T: Copy>(module: HMODULE, name: &str) -> Result<T, String> {
@@ -1349,12 +1356,9 @@ mod tests {
     }
 
     fn mpv_dll() -> bool {
-        std::env::var_os("READER_MPV_DLL")
-            .map(|p| std::path::Path::new(&p).exists())
-            .unwrap_or(false)
-            || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("libmpv-2.dll")
-                .exists()
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("libmpv-2.dll")
+            .exists()
     }
 
     // The parent window is owned by the test thread. mpv's pump thread creates

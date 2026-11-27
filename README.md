@@ -41,7 +41,7 @@ pnpm tauri dev *> tauri-dev.log 2>&1
 
 窗口加载 `http://localhost:1420`。如果日志里 Vite 已就绪、Cargo 也编译完成，但窗口始终不出现，按下面的问题排查。
 
-- **视频需要 libmpv**：Windows 端把 `libmpv-2.dll` 放到 `reader.exe` 同目录，或设置 `READER_MPV_DLL` 指向它；缺失时视频与视频封面不可用。
+- **视频需要 libmpv**：Windows 端把 `libmpv-2.dll` 放到 `reader.exe` 同目录；缺失时视频与视频封面不可用。仓库不入库该 DLL，打包时由 `bundle.resources` 从 `src-tauri/libmpv-2.dll` 投放（开发期放这个位置即可，见 `docs/ARCHITECTURE.md`）；分发合规见 `src-tauri/NOTICE.md`。
 - **需要 CDP 调试端口时**用 `scripts/dev-launch.ps1`：它会临时给 `tauri.conf.json` 注入 `--remote-debugging-port=9222`，退出后自动还原。仓库里的配置**不再保留**调试端口。
 - **Android**：需要本地生成 `src-tauri/gen/android` 工程与 Kotlin 插件；这部分不在版本库内，详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 

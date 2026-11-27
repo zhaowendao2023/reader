@@ -7,6 +7,8 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/resource/
 src-tauri/keys/
+# 构建时随安装包分发的 libmpv（体积大，不入库；见 docs/ARCHITECTURE.md）
+src-tauri/libmpv-2.dll
 
 # 运行时与本地文件
 *.log

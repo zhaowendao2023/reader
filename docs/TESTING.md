@@ -48,7 +48,7 @@ node scripts/verify-dom.mjs    # DOM 断言
 - `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量在本项目无效（wry 显式覆盖），只有 `tauri.conf.json` 的 `additionalBrowserArgs` 生效——所以必须走 `scripts/dev-launch.ps1`，不要手工把调试端口写回配置。
 - `vite.config.js` 的 `server.strictPort = true`：1420 被旧 `pnpm dev` 占住时，`tauri dev` 起不来。用 `Get-NetTCPConnection -LocalPort 1420 -State Listen` 查，`taskkill /PID <pid> /T /F` 清。
 - `tauri-dev.log` 被残留进程占用时，先改名再启动。
-- Windows 视频链路需要 `libmpv-2.dll`（exe 同目录或 `READER_MPV_DLL`）；没有 DLL 时视频命令报错，`cargo test` 中相关用例会跳过。
+- Windows 视频链路需要 `libmpv-2.dll`（运行时找 exe 同目录；本地开发放在 `src-tauri/libmpv-2.dll`，debug 构建会回退到该路径）；没有 DLL 时视频命令报错，`cargo test` 中相关用例会跳过。
 - `pnpm.ps1` 若被执行策略拦截，改用 `pnpm.cmd` 或 `corepack enable`。
 
 ## 测试书与夹具
