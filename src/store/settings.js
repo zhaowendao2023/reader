@@ -6,7 +6,9 @@ import { Store } from "@tauri-apps/plugin-store";
 
 const SETTINGS_FILE = "settings.bin";
 const VIDEO_SEEK_SECONDS = [5, 10, 15, 30];
-const VIDEO_PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// 播放倍速档位的唯一来源：videoSession 也引用它渲染倍速面板，避免两处各写一份而漂移。
+// 1× 必须留在档位里——它是默认值与「回到原速」的唯一入口。
+export const VIDEO_PLAYBACK_SPEEDS = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 export const useSettings = defineStore("settings", {
   state: () => ({

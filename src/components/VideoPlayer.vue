@@ -51,8 +51,9 @@ const gesture = reactive({
   previewPosition: null,
   pressTimer: null,
   longPressActive: false,
-  restoreSpeed: 1,
 });
+// 长按临时加速：触屏与键盘共用，restore 记录按下前的固定倍速。
+const pressSpeed = reactive({ active: false, restore: 1 });
 const playbackHud = reactive({
   visible: false,
   type: "seek",
@@ -141,7 +142,7 @@ const session = useVideoSession({
   hud: { show: showPlaybackHud },
   pokeChrome,
   // 长按临时倍速期间，轮询到的真实倍速不覆盖显示值。
-  isLongPressing: () => gesture.longPressActive,
+  isLongPressing: () => pressSpeed.active,
   speedSetting: () => settings.videoPlaybackSpeed,
   saveSpeedSetting: (speed) => settings.setVideoPlaybackSpeed(speed),
 });
@@ -303,32 +304,52 @@ const clearLongPressTimer = () => {
   gesture.pressTimer = null;
 };
 
-const startTemporarySpeed = () => {
-  if (!gesture.active || gesture.moved || gesture.longPressActive || !currentFile.value) return;
-  gesture.longPressActive = true;
-  gesture.restoreSpeed = playbackSpeed.value;
-  gestureSuppressUntil = Date.now() + 600;
-  resetTapState();
-  showPlaybackHud({ type: "speed", primary: "2× 加速播放", secondary: "横滑可快进", hold: true });
-  invokeSpeed(2)
+// 长按临时加速的目标档位：已经 2× 及以上就提到 3×，否则提到 2×。
+// 触屏长按与桌面按住右方向键共用这一条规则，避免两端手感分叉。
+const pressSpeedTarget = () => ((Number(playbackSpeed.value) || 1) >= 2 ? 3 : 2);
+
+// 长按加速的开始/结束只有这一对入口。gesture.longPressActive 只表示"触屏正在长按"，
+// 键盘按住不经过手势层，所以进行中状态由 pressSpeed.active 统一承载。
+const beginPressSpeed = (hint = "松手恢复") => {
+  if (pressSpeed.active || !currentFile.value) return;
+  pressSpeed.active = true;
+  pressSpeed.restore = playbackSpeed.value;
+  const target = pressSpeedTarget();
+  showPlaybackHud({ type: "speed", primary: `${target}× 加速播放`, secondary: hint, hold: true });
+  invokeSpeed(target)
     .then((actual) => {
-      if (gesture.longPressActive) playbackSpeed.value = actual;
+      if (pressSpeed.active) playbackSpeed.value = actual;
     })
     .catch((e) => {
-      gesture.longPressActive = false;
+      pressSpeed.active = false;
       hidePlaybackHud();
       error.value = String(e);
     });
 };
 
-const stopTemporarySpeed = () => {
-  if (!gesture.longPressActive) return;
-  const restore = gesture.restoreSpeed;
-  gesture.longPressActive = false;
+const endPressSpeed = () => {
+  if (!pressSpeed.active) return;
+  const restore = pressSpeed.restore;
+  pressSpeed.active = false;
   showPlaybackHud({ type: "speed", primary: `恢复 ${restore}×` });
   invokeSpeed(restore)
     .then((actual) => (playbackSpeed.value = actual))
     .catch((e) => (error.value = String(e)));
+};
+
+const startTemporarySpeed = () => {
+  if (!gesture.active || gesture.moved || gesture.longPressActive || !currentFile.value) return;
+  gesture.longPressActive = true;
+  gestureSuppressUntil = Date.now() + 600;
+  resetTapState();
+  // 触屏上继续横向滑动会切到进度预览，所以提示带出口；键盘没有这条路径。
+  beginPressSpeed("横滑可快进");
+};
+
+const stopTemporarySpeed = () => {
+  if (!gesture.longPressActive) return;
+  gesture.longPressActive = false;
+  endPressSpeed();
 };
 
 const onStageTouchStart = (e) => {
@@ -620,6 +641,16 @@ const onPointerMove = () => {
 };
 
 /* ===== 键盘快捷键 ===== */
+// 桌面端的「长按」落在右方向键上：按住超过 LONG_PRESS_MS 进入临时加速，
+// 短按仍是快进，两者共存靠松开时判断有没有真的提速过。
+let keyHoldTimer = null;
+let keyHoldBoosted = false;
+
+const clearKeyHold = () => {
+  clearTimeout(keyHoldTimer);
+  keyHoldTimer = null;
+};
+
 const onKey = (e) => {
   const tag = (e.target?.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
@@ -636,6 +667,17 @@ const onKey = (e) => {
       seekBy(-settings.videoSeekSeconds);
       break;
     case "ArrowRight":
+      e.preventDefault();
+      // 按住会持续触发 keydown，重复事件不能重启计时器。
+      if (e.repeat) break;
+      clearKeyHold();
+      keyHoldBoosted = false;
+      keyHoldTimer = setTimeout(() => {
+        keyHoldTimer = null;
+        keyHoldBoosted = true;
+        beginPressSpeed();
+      }, LONG_PRESS_MS);
+      break;
     case "KeyL":
       e.preventDefault();
       seekBy(settings.videoSeekSeconds);
@@ -680,6 +722,30 @@ const onKey = (e) => {
   }
 };
 
+// 右方向键松开：提速过就只恢复倍速，没提速过才算一次快进。
+const onKeyUp = (e) => {
+  if (e.code !== "ArrowRight") return;
+  const boosted = keyHoldBoosted;
+  clearKeyHold();
+  keyHoldBoosted = false;
+  if (boosted) {
+    endPressSpeed();
+    return;
+  }
+  const tag = (e.target?.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  seekBy(settings.videoSeekSeconds);
+};
+
+// 切走窗口时 keyup 收不到，必须兜底恢复，否则倍速会一直停在加速档。
+const onWindowBlur = () => {
+  clearKeyHold();
+  if (!keyHoldBoosted) return;
+  keyHoldBoosted = false;
+  endPressSpeed();
+};
+
 onMounted(async () => {
   enterSystemUIImmersive();
   document.documentElement.classList.add("video-mode");
@@ -691,6 +757,8 @@ onMounted(async () => {
   window.addEventListener("resize", onResize);
   window.addEventListener("mousemove", onPointerMove, { passive: true });
   window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", onWindowBlur);
   window.addEventListener("wheel", onWheel, { passive: false });
   stageObserver = new ResizeObserver(onResize);
   if (stage.value) stageObserver.observe(stage.value);
@@ -730,6 +798,8 @@ onUnmounted(() => {
   clearTimeout(brightnessTimer);
   resetTapState();
   clearLongPressTimer();
+  clearKeyHold();
+  keyHoldBoosted = false;
   hidePlaybackHud();
   gesture.active = false;
   gesture.longPressActive = false;
@@ -738,6 +808,8 @@ onUnmounted(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("mousemove", onPointerMove);
   window.removeEventListener("keydown", onKey);
+  window.removeEventListener("keyup", onKeyUp);
+  window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("wheel", onWheel);
   invoke(vcmd("release"), { id: 0 }).catch(() => {});
   invoke(vcmd("stop_all")).catch(() => {});

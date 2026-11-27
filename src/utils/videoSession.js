@@ -13,8 +13,10 @@ import { VIDEO_EXTS, extOf, joinPath } from "./media";
 import { dirCache, mediaDirKey, enqueueCover } from "../store/browserCache";
 import { canonKey, itemId } from "./itemKey";
 import { getVideoProgressEntry, getVideoProgressMap, setVideoProgress } from "./progress";
+import { VIDEO_PLAYBACK_SPEEDS } from "../store/settings";
 
-export const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// 档位只在设置模块里定义一次，这里转发给视图层；两边各存一份会随升级漂移。
+export const SPEED_OPTIONS = VIDEO_PLAYBACK_SPEEDS;
 
 const RESUME_MIN_SECONDS = 5;
 const RESUME_END_GUARD_SECONDS = 10;
@@ -95,12 +97,15 @@ export const useVideoSession = ({
   };
 
   // 串行倍速命令，保证“长按刚触发就松手”时恢复命令一定最后执行。
+  // 上限与后端 set_speed 的 clamp 保持一致，改一处必须同步另一处。
+  const SPEED_MIN = 0.5;
+  const SPEED_MAX = 3;
   const invokeSpeed = (speed) => {
-    const target = Math.max(0.5, Math.min(2, Number(speed) || 1));
+    const target = Math.max(SPEED_MIN, Math.min(SPEED_MAX, Number(speed) || 1));
     const task = speedCommandChain
       .catch(() => 1)
       .then(() => invoke(vcmd("set_speed"), { id: 0, speed: target }))
-      .then((actual) => Math.max(0.5, Math.min(2, Number(actual) || target)));
+      .then((actual) => Math.max(SPEED_MIN, Math.min(SPEED_MAX, Number(actual) || target)));
     speedCommandChain = task;
     return task;
   };

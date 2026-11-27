@@ -199,7 +199,7 @@ pub async fn video_set_speed(app: AppHandle, id: usize, speed: f64) -> Result<f6
         app,
         "setSpeed",
         serde_json::json!({ "id": id, "speed": speed }),
-        Ok(speed.clamp(0.5, 2.0)),
+        Ok(speed.clamp(0.5, 3.0)),
         |r: NumberValue| r.value
     )
 }

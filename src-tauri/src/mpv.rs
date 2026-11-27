@@ -349,7 +349,8 @@ mod imp {
         }
 
         fn set_speed(&self, speed: f64) -> Result<f64, String> {
-            let speed = speed.clamp(0.5, 2.0);
+            // 上限与前端的 SPEED_MAX 保持一致，否则 2.5/3× 会被静默压回 2×。
+            let speed = speed.clamp(0.5, 3.0);
             self.command_string(&format!("set speed {speed:.2}"))?;
             Ok(self.speed())
         }
@@ -1118,7 +1119,7 @@ pub async fn mpv_set_speed(app: AppHandle, id: usize, speed: f64) -> Result<f64,
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (app, id);
-        Ok(speed.clamp(0.5, 2.0))
+        Ok(speed.clamp(0.5, 3.0))
     }
 }
 
