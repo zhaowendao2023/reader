@@ -39,6 +39,12 @@
     ],
     "f:\\documents": [],
     "f:\\manga": [{ name: "Other Book.cbz", isDir: false, ref: "testbook2" }],
+    // 图片阅览（/media）的翻页验收数据：竖图 + 方图，覆盖跟手、回弹与尺寸变化。
+    "f:\\comics\\art pack": [
+      { name: "01 Art Pack.png", isDir: false, ref: "artpack" },
+      { name: "02 Cover Art.png", isDir: false, ref: "artcover" },
+      { name: "03 Art Pack.png", isDir: false, ref: "artpack" },
+    ],
   };
 
   if (window.__PREFETCH_TEST_FILES__) {

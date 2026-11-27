@@ -23,13 +23,39 @@ const booksStore = useBooks();
 // 移动端翻页靠滑动 + 底部 pill，画面上的侧边翻页箭头仅桌面端显示
 const isAndroidViewer = computed(() => booksStore.platform === "android");
 
+// ============ 翻页动效参数（真机手感可直接调这里）============
+const PAGE_MS = 240; // 程序化翻页滑动时长
+const REBOUND_MS = 200; // 跟手不足阈值时的回弹时长
+const SLIDE_SWIPE = 56; // 触发翻页的位移阈值（px）
+const SLIDE_FLICK = 24; // 快速轻扫的最小位移（px）
+const SLIDE_VELOCITY = 0.5; // 快速轻扫的速度阈值（px/ms）
+const SLOW_GESTURE_MS = 900; // 超过此时长的慢拖不判翻页
+const SLIDE_GAP = 48; // 邻层停在屏幕外多远处（px）
+
 const images = ref([]);
 const index = ref(0);
-const url = ref("");
 const loading = ref(true);
 const error = ref("");
 const permissionMissing = ref(false);
 const stageRef = ref(null);
+
+// ============ 双图缓冲 ============
+// 两个渲染层：当前层承接缩放/平移，邻层预置相邻图并停在屏幕外。
+// 翻页只交换 curLayer（谁是当前层），不搬内容、不换 src —— 元素与 URL 都不重建，
+// 因此翻页不会重新解码或闪烁。每层记自己的原始尺寸，两层 fit 用同一公式独立计算。
+const layers = ref([
+  { id: 1, idx: -1, baseUrl: "", natW: 0, natH: 0 },
+  { id: 2, idx: -1, baseUrl: "", natW: 0, natH: 0 },
+]);
+const curLayer = ref(0);
+const cur = computed(() => layers.value[curLayer.value]);
+const nxt = computed(() => layers.value[1 - curLayer.value]);
+const slideX = ref(0); // 翻页水平位移：当前层 translateX，邻层取「偏移 - slideX」
+const slideDir = ref(1); // 1 = 下一张在右侧，-1 = 上一张在左侧
+const animating = ref(false); // 程序化滑动中（启用 transform 过渡）
+const dragging = ref(false); // 单指水平跟手中
+const animMs = ref(PAGE_MS);
+
 // 显示尺寸模型：applyFit 按图片宽高 + 舞台尺寸算出 zoom=1（contain 完整显示）的基准
 // 宽高；缩放始终围绕舞台中心，fitStyle 综合缩放实时生成内联样式（绝对定位居中）。
 const baseW = ref(0); // zoom=1 时图片显示宽（px）
@@ -43,6 +69,17 @@ const panX = ref(0);
 const panY = ref(0);
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 8;
+
+// 动效样式：只在过渡/跟手期间挂 transition 与 will-change；
+// 平时不提升合成层，避免两张原图长期占着 GPU 图层。
+const motionStyle = computed(() => {
+  if (animating.value) {
+    return { transition: `transform ${animMs.value}ms var(--ease-out)`, willChange: "transform" };
+  }
+  if (dragging.value) return { willChange: "transform" };
+  return null;
+});
+
 const fitStyle = computed(() => {
   if (!baseW.value || !baseH.value) return null;
   const w = baseW.value * zoom.value;
@@ -56,19 +93,52 @@ const fitStyle = computed(() => {
     maxWidth: "none",
     maxHeight: "none",
     objectFit: "contain",
+    transform: `translateX(${slideX.value}px)`,
   };
 });
+
+// 邻层尺寸：与当前层同一 fit 公式（zoom=1 的 contain），只依赖它自己的原始尺寸。
+// 邻层不参与缩放，所以拖动期只改 transform，不触发布局。
+const nvFit = computed(() => {
+  const l = nxt.value;
+  if (!l.baseUrl || !l.natW || !l.natH) return null;
+  if (stageW.value <= 0 || stageH.value <= 0) return null;
+  const s = Math.min(stageW.value / l.natW, stageH.value / l.natH);
+  return { w: l.natW * s, h: l.natH * s };
+});
+
+const nvStyle = computed(() => {
+  const f = nvFit.value;
+  if (!f) return null;
+  return {
+    position: "absolute",
+    left: `${(stageW.value - f.w) / 2}px`,
+    top: `${(stageH.value - f.h) / 2}px`,
+    width: `${f.w}px`,
+    height: `${f.h}px`,
+    maxWidth: "none",
+    maxHeight: "none",
+    objectFit: "contain",
+    // 静止时停在屏幕外；slideX 拉到 -(stageW + SLIDE_GAP) 时正好滑到 0。
+    transform: `translateX(${slideDir.value * (stageW.value + SLIDE_GAP) + slideX.value}px)`,
+  };
+});
+
 let lastNatural = null; // { w, h }，供窗口 resize 时重新铺满
-let objectUrl = "";
 let alive = true;
-// 翻页竞态防护：连续快速滑动时，只应用最后一次 loadImage 的结果
+// 翻页竞态防护：连续快速滑动时，只应用最后一次加载的结果
 let loadSeq = 0;
-// 手势状态：单指滑动翻页（未放大）/ 拖动平移（放大后）+ 双指捏合缩放；单击仅用于双击检测
+let neighborSeq = 0;
+let pageTimer = null;
+// 手势状态：单指跟手翻页（未放大）/ 拖动平移（放大后）+ 双指捏合缩放；单击仅用于双击检测
 let swipeStart = null;
 let pointers = new Map();
 let pinchStart = null;
 let suppressClick = false;
 let gestureMoved = false; // 本次单指手势是否产生实际位移（滑动/平移）
+// 本次手势已为哪个方向预置过邻层：拖动中每帧都调 loadNeighbor 会互相作废（临时文件的
+// 读取还没返回就被下一次请求挤掉），所以同一手势同一方向只发起一次。
+let dragNeighborDir = 0;
 let panStartX = 0;
 let panStartY = 0;
 // 连翻热态检测：2s 内再次翻页说明用户在看图间隙很短的连滑，多预取一张
@@ -77,8 +147,23 @@ let lastFlipAt = 0;
 // displayCache 直接缓存「原图」blob URL，不做任何下采样/重编码：
 // Chrome 的 <img> 会按显示尺寸降采样解码（60MP 冷解码实测 ~18ms），
 // 放大时用 blob URL 的 fragment 变体强制按新尺寸重解码（实测 ~15ms）→ 即时清晰。
-const baseUrl = ref(""); // 当前图的无 fragment blob URL
-const zoomBand = ref(""); // 当前已生效的缩放档位（'' / z2 / z4 / z8）
+const zoomBand = ref(""); // 当前层已生效的缩放档位（'' / z2 / z4 / z8）
+// 当前层显示 URL = 原图 URL + 档位 fragment；邻层始终用 baseUrl（zoom=1 无需档位）。
+const url = computed(() => {
+  const b = cur.value.baseUrl;
+  if (!b) return "";
+  return zoomBand.value ? `${b}#${zoomBand.value}` : b;
+});
+
+// 舞台内容态：有图优先，其余按加载/权限/错误/空依次回落。
+// 拆成单值是因为现在有两层 <img>，v-if/v-else-if 链不能跨元素。
+const stageState = computed(() => {
+  if (url.value) return "image";
+  if (loading.value) return "loading";
+  if (permissionMissing.value) return "permission";
+  if (error.value) return "error";
+  return "empty";
+});
 const dimsCache = new Map(); // path -> { w, h }（图片头部解析，1ms，不解码）
 const dimsCacheMax = 1024;
 let bandTimer = null;
@@ -109,7 +194,7 @@ const getDisplay = async (path) => {
 };
 
 // 后台预取后续图：读盘 + 原图 URL 入 displayCache（无解码成本，几乎零开销）。
-// 翻页命中缓存 → 换 src 后 Chrome 按显示尺寸解码（~20ms）秒开。
+// 翻页时邻层命中缓存 → 同帧就位，滑入不用等。
 // gif 跳过（不入缓存，预取了也是泄漏）。
 const prefetchNext = () => {
   if (!alive || images.value.length < 2) return;
@@ -143,11 +228,11 @@ const bandForZoom = (z) => (ZOOM_BANDS.find((b) => z <= b.max) || ZOOM_BANDS[ZOO
 
 // 缩放停止（250ms 防抖）后应用档位：档位变了才换 src（触发重解码）
 const applyZoomBand = () => {
-  if (!baseUrl.value) return;
+  if (!cur.value.baseUrl) return;
   const band = bandForZoom(zoom.value);
   if (band === zoomBand.value) return;
+  // 只改档位，显示 URL 由 url computed 派生（避免和翻页抢同一个赋值点）
   zoomBand.value = band;
-  url.value = band ? `${baseUrl.value}#${band}` : baseUrl.value;
 };
 const onZoomSettle = () => {
   clearTimeout(bandTimer);
@@ -155,11 +240,26 @@ const onZoomSettle = () => {
 };
 watch(zoom, onZoomSettle);
 
-const loadImage = async (path) => {
+// 把一层释放掉：仍被缓存（回看可复用）的 URL 保留，gif / 被淘汰的由我们 revoke。
+const releaseLayer = (l) => {
+  if (l.baseUrl && !displayCacheHas(l.baseUrl)) URL.revokeObjectURL(l.baseUrl);
+  l.baseUrl = "";
+  l.idx = -1;
+  l.natW = 0;
+  l.natH = 0;
+};
+
+// 告知 displayCache 屏幕上所有可见 URL（两层）：翻页过渡期间新旧同时可见，
+// 只登记一个会让邻层在 LRU 淘汰时被 revoke 成空白。
+const syncDisplayed = () => {
+  displayCacheSetDisplayed(layers.value.map((l) => l.baseUrl));
+};
+
+// 直接就位（无滑动）：首图、初始化恢复进度、以及无法定位尺寸时的降级路径。
+const setCurrent = async (path, imgIdx) => {
   const seq = ++loadSeq;
-  // 首图：无旧图可展示，显示加载态；翻页：旧图保持到新图位图就绪再瞬间替换。
-  // 原图直显：换 src 后 Chrome 按显示尺寸降采样解码（~20ms），无需预解码。
-  const first = !url.value;
+  // 首图：无旧图可展示，显示加载态；其余情况旧图保持到新图位图就绪再替换。
+  const first = !cur.value.baseUrl;
   if (first) loading.value = true;
   error.value = "";
   try {
@@ -169,23 +269,30 @@ const loadImage = async (path) => {
       if (!displayCacheHas(display.url)) URL.revokeObjectURL(display.url);
       return;
     }
+    const l = cur.value;
     // 释放上一张：仍被缓存（回看可复用）的保留；gif/被淘汰的由我们释放
-    if (objectUrl && !displayCacheHas(objectUrl)) URL.revokeObjectURL(objectUrl);
-    objectUrl = display.url;
-    displayCacheSetDisplayed(display.url);
+    if (l.baseUrl && l.baseUrl !== display.url && !displayCacheHas(l.baseUrl)) {
+      URL.revokeObjectURL(l.baseUrl);
+    }
+    l.baseUrl = display.url;
+    l.idx = imgIdx;
+    l.natW = display.dims?.w || 0;
+    l.natH = display.dims?.h || 0;
+    zoomBand.value = ""; // 回到适应尺寸（zoom 已复位 1），用基础 URL
+    slideX.value = 0;
+    slideDir.value = 1;
+    animating.value = false;
     // 尺寸来自图片头部解析（1ms，不解码）；applyFit 与换 src 在同一同步块，
-    // Vue 同帧应用 → 元素尺寸和新图同时就位，无"旧图套新尺寸"的跳变。
+    // Vue 同帧应用 → 元素尺寸和新图同时就位，无「旧图套新尺寸」的跳变。
     if (display.dims) {
-      lastNatural = display.dims;
+      lastNatural = { w: display.dims.w, h: display.dims.h };
       applyFit();
     } else {
       lastNatural = null;
       baseW.value = 0;
       baseH.value = 0;
     }
-    baseUrl.value = display.url;
-    zoomBand.value = ""; // 翻页回到适应尺寸（zoom 已复位 1），用基础 URL
-    url.value = display.url;
+    syncDisplayed();
   } catch (e) {
     if (alive && seq === loadSeq) error.value = String(e);
   } finally {
@@ -197,13 +304,129 @@ const loadImage = async (path) => {
   }
 };
 
-const pick = async (i) => {
-  if (!images.value.length) return;
+// 预置邻层：把 dir 方向那张读进「非当前层」，停在屏幕外等翻页。
+const loadNeighbor = async (dir) => {
+  const total = images.value.length;
+  if (total < 2) return false;
+  const slot = layers.value[1 - curLayer.value];
+  const target = (index.value + dir + total) % total;
+  if (slot.idx === target && slot.baseUrl) return true;
+  const seq = ++neighborSeq;
+  const baseCur = curLayer.value;
+  const path = images.value[target]?.path;
+  if (!path) return false;
+  try {
+    const d = await getDisplay(path);
+    // 加载期间翻页了（当前层变了）或有更新的邻层请求：丢弃本次结果
+    if (!alive || seq !== neighborSeq || curLayer.value !== baseCur) {
+      if (!displayCacheHas(d.url)) URL.revokeObjectURL(d.url);
+      return false;
+    }
+    if (slot.baseUrl && slot.baseUrl !== d.url && !displayCacheHas(slot.baseUrl)) {
+      URL.revokeObjectURL(slot.baseUrl);
+    }
+    slot.baseUrl = d.url;
+    slot.idx = target;
+    slot.natW = d.dims?.w || 0;
+    slot.natH = d.dims?.h || 0;
+    syncDisplayed();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// 翻页收尾：交换「谁是当前层」。两层的 URL 与 DOM 都不搬动，
+// 交换瞬间几何等价（zoom=1、pan=0、slideX=0），因此不会闪也不会重新解码。
+const commitFlip = () => {
+  clearTimeout(pageTimer);
+  pageTimer = null;
+  const from = layers.value[curLayer.value];
+  curLayer.value = 1 - curLayer.value;
+  const to = layers.value[curLayer.value];
+  index.value = to.idx;
+  lastNatural = { w: to.natW, h: to.natH };
+  slideX.value = 0;
+  animating.value = false;
+  zoomBand.value = "";
+  applyFit();
+  releaseLayer(from);
+  syncDisplayed();
+  prefetchNext();
+  savePackPosition();
+};
+
+// 等一帧真正绘制。transition 需要有「已在屏幕上生效的起始值」：
+// 只等 nextTick 时 DOM 已改但还没绘制，浏览器会把「邻层首次出现」和「目标 transform」
+// 算进同一帧，结果邻层直接瞬移到位、只剩当前层在滑。
+const nextPaint = async () => {
+  await nextTick();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+};
+
+// 回弹：位移没到阈值，滑回原位。
+const rebound = async () => {
+  dragging.value = false;
+  animMs.value = REBOUND_MS;
+  animating.value = true;
+  await nextTick(); // 让 transition 先挂上，起点才是当前跟手位置
+  slideX.value = 0;
+  pageTimer = setTimeout(() => {
+    pageTimer = null;
+    animating.value = false;
+  }, REBOUND_MS);
+};
+
+// 完成一次跟手翻页：从当前跟手位置继续滑到邻层就位。
+const completeSwipe = async (dir) => {
+  dragging.value = false;
+  if (!nxt.value.baseUrl || slideDir.value !== dir) {
+    const ok = await loadNeighbor(dir);
+    if (!alive) return;
+    if (!ok || !nvFit.value) {
+      // 邻图读不到或尺寸未知：不硬切，回弹更诚实
+      await rebound();
+      return;
+    }
+    slideDir.value = dir;
+  }
   lastFlipAt = Date.now();
-  index.value = (i + images.value.length) % images.value.length;
-  // 每张图从适应尺寸（zoom=1）开始
+  animMs.value = PAGE_MS;
+  animating.value = true;
+  await nextPaint();
+  slideX.value = -dir * (stageW.value + SLIDE_GAP);
+  pageTimer = setTimeout(commitFlip, PAGE_MS);
+};
+
+// 程序化翻页（按钮 / pill / 键盘）：走与跟手同一套滑动。
+const flipTo = async (dir) => {
+  if (animating.value || images.value.length < 2) return;
+  const total = images.value.length;
+  const target = (index.value + dir + total) % total;
+  // 翻页统一从适应尺寸开始：交换前后两层的几何才等价（不闪）
+  if (zoom.value !== 1) resetZoom();
+  const ok = await loadNeighbor(dir);
+  if (!alive) return;
+  if (!ok || !nvFit.value) {
+    // 尺寸未知 / 加载失败：退化为直接切换，不留中间态
+    await jumpTo(target);
+    return;
+  }
+  lastFlipAt = Date.now();
+  slideDir.value = dir;
+  slideX.value = 0;
+  animMs.value = PAGE_MS;
+  animating.value = true;
+  await nextPaint();
+  slideX.value = -dir * (stageW.value + SLIDE_GAP);
+  pageTimer = setTimeout(commitFlip, PAGE_MS);
+};
+
+// 直接跳到第 target 张（无动画）。
+const jumpTo = async (target) => {
+  index.value = target;
   resetZoom();
-  await loadImage(images.value[index.value].path);
+  await setCurrent(images.value[target].path, target);
   savePackPosition();
 };
 
@@ -215,8 +438,9 @@ const savePackPosition = () => {
   }
 };
 
-const next = () => pick(index.value + 1);
-const prev = () => pick(index.value - 1);
+// 翻页入口：统一走 flipTo（滑动），不再瞬间替换。
+const next = () => void flipTo(1);
+const prev = () => void flipTo(-1);
 
 const init = async () => {
   const single = route.query.path;
@@ -260,12 +484,12 @@ const init = async () => {
       if (list.length) {
         // 若定位到「继续看」页，立即写回一次，避免旧进度残留覆盖首次进入的 0
         savePackPosition();
-        await loadImage(list[idx].path);
+        await setCurrent(list[idx].path, idx);
         return;
       }
     }
     if (typeof single === "string" && single) {
-      await loadImage(single);
+      await setCurrent(single, 0);
       return;
     }
     error.value = "缺少图片路径";
@@ -380,10 +604,38 @@ const onStageWheel = (e) => {
   setZoom(zoom.value * factor);
 };
 
-// ============ 指针手势：单指滑动翻页 + 双指捏合缩放 ============
+// ============ 指针手势：单指跟手翻页 + 双指捏合缩放 ============
 const pointerDist = () => {
   const [a, b] = [...pointers.values()];
   return Math.hypot(a.x - b.x, a.y - b.y);
+};
+
+// 跟手位移合批：pointermove 可达 120Hz，用 rAF 把每帧最多一次响应式写入。
+// 拖动期间只改 transform，不触发 layout。
+let dragRaf = 0;
+let dragTarget = null;
+
+const flushDrag = () => {
+  if (dragRaf) {
+    cancelAnimationFrame(dragRaf);
+    dragRaf = 0;
+  }
+  if (dragTarget !== null) {
+    slideX.value = dragTarget;
+    dragTarget = null;
+  }
+};
+
+const queueDrag = (x) => {
+  dragTarget = x;
+  if (dragRaf) return;
+  dragRaf = requestAnimationFrame(() => {
+    dragRaf = 0;
+    if (dragTarget !== null) {
+      slideX.value = dragTarget;
+      dragTarget = null;
+    }
+  });
 };
 
 const onStagePointerDown = (e) => {
@@ -399,14 +651,20 @@ const onStagePointerDown = (e) => {
   }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) {
+    // 第二指按下：放弃跟手翻页回中，捏合优先
     pinchStart = { dist: pointerDist(), zoom: zoom.value };
     swipeStart = null;
     gestureMoved = false;
+    flushDrag();
+    dragging.value = false;
+    slideX.value = 0;
   } else if (pointers.size === 1) {
     swipeStart = { x: e.clientX, y: e.clientY, t: Date.now() };
     panStartX = panX.value;
     panStartY = panY.value;
     gestureMoved = false;
+    dragNeighborDir = 0;
+    dragging.value = false;
   }
 };
 
@@ -420,16 +678,50 @@ const onStagePointerMove = (e) => {
     setZoom(pinchStart.zoom * (pointerDist() / pinchStart.dist));
     return;
   }
-  // 单指：放大后拖动 = 平移画面；未放大保持原样，松手时判定滑动翻页
-  if (pointers.size === 1 && swipeStart) {
-    const dx = e.clientX - swipeStart.x;
-    const dy = e.clientY - swipeStart.y;
-    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) gestureMoved = true;
-    if (zoom.value > 1 && gestureMoved) {
+  if (pointers.size !== 1 || !swipeStart) return;
+  const dx = e.clientX - swipeStart.x;
+  const dy = e.clientY - swipeStart.y;
+  if (Math.abs(dx) > 6 || Math.abs(dy) > 6) gestureMoved = true;
+  // 放大态：拖动 = 平移画面（保持原行为，不翻页）
+  if (zoom.value > 1) {
+    if (gestureMoved) {
       panX.value = panStartX + dx;
       panY.value = panStartY + dy;
       clampPan();
     }
+    return;
+  }
+  // 适应态：单指水平拖动 = 跟手翻页预览，竖向手势不接管
+  if (!gestureMoved || images.value.length < 2 || animating.value) return;
+  if (Math.abs(dx) <= Math.abs(dy)) return;
+  const dir = dx < 0 ? 1 : -1;
+  dragging.value = true;
+  if (dir !== dragNeighborDir) {
+    dragNeighborDir = dir;
+    slideDir.value = dir;
+    void loadNeighbor(dir); // 立即预置该方向的邻层，命中缓存时同帧就位
+  }
+  queueDrag(dx);
+};
+
+// 松手结算：位移或速度够就放行翻页，否则回弹。
+const finishDrag = (e) => {
+  flushDrag();
+  const dx = slideX.value;
+  const dy = e.clientY - swipeStart.y;
+  const dt = Date.now() - swipeStart.t;
+  const speed = Math.abs(dx) / Math.max(dt, 1);
+  const horizontal = Math.abs(dx) > Math.abs(dy);
+  const pass =
+    horizontal &&
+    dt <= SLOW_GESTURE_MS &&
+    (Math.abs(dx) >= SLIDE_SWIPE || (Math.abs(dx) >= SLIDE_FLICK && speed >= SLIDE_VELOCITY));
+  if (pass) {
+    suppressClick = true;
+    setTimeout(() => (suppressClick = false), 400);
+    void completeSwipe(dx < 0 ? 1 : -1);
+  } else {
+    void rebound();
   }
 };
 
@@ -443,17 +735,8 @@ const onStagePointerUp = (e) => {
           suppressClick = true;
           setTimeout(() => (suppressClick = false), 400);
         }
-      } else {
-        // 适应态：单指水平滑动翻页（左滑下一张/右滑上一张）
-        const dx = e.clientX - swipeStart.x;
-        const dy = e.clientY - swipeStart.y;
-        const dt = Date.now() - swipeStart.t;
-        if (images.value.length > 1 && dt <= 900 && Math.abs(dx) >= 56 && Math.abs(dx) > Math.abs(dy)) {
-          suppressClick = true;
-          setTimeout(() => (suppressClick = false), 400);
-          if (dx < 0) next();
-          else prev();
-        }
+      } else if (dragging.value) {
+        finishDrag(e);
       }
     }
     pinchStart = null;
@@ -475,6 +758,8 @@ const onStagePointerCancel = (e) => {
     pinchStart = null;
     swipeStart = null;
     gestureMoved = false;
+    flushDrag();
+    if (dragging.value) void rebound();
   }
 };
 
@@ -517,6 +802,8 @@ onMounted(async () => {
 onUnmounted(() => {
   alive = false;
   clearTimeout(bandTimer);
+  clearTimeout(pageTimer);
+  if (dragRaf) cancelAnimationFrame(dragRaf);
   exitSystemUIImmersive();
   // 保存当前看图位置（防抖定时器可能还没触发写盘）
   savePackPosition();
@@ -524,10 +811,9 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
   window.removeEventListener("resize", applyFit);
   stageRef.value?.removeEventListener("wheel", onStageWheel);
-  // 释放组件自持的 URL（gif/被淘汰的）；缓存内（回看可复用）的交给 displayCache
-  if (objectUrl && !displayCacheHas(objectUrl)) URL.revokeObjectURL(objectUrl);
-  objectUrl = "";
-  displayCacheSetDisplayed("");
+  // 释放两层自持的 URL（gif/被淘汰的）；缓存内（回看可复用）的交给 displayCache
+  for (const l of layers.value) releaseLayer(l);
+  displayCacheSetDisplayed();
 });
 </script>
 
@@ -552,27 +838,39 @@ onUnmounted(() => {
     <div
       ref="stageRef"
       class="stage"
-      :class="{ zoomed: zoom > 1 }"
+      :class="{ zoomed: zoom > 1, dragging }"
       @click="onStageClick"
       @pointerdown="onStagePointerDown"
       @pointermove="onStagePointerMove"
       @pointerup="onStagePointerUp"
       @pointercancel="onStagePointerCancel"
     >
+      <!-- 邻层：预置相邻图并停在屏幕外，翻页时滑入。两层都用层 id 作 key，
+           交换 curLayer 时元素被复用而不是重建 —— 不重新解码，也就不会闪。 -->
+      <img
+        v-if="nxt.baseUrl"
+        :key="nxt.id"
+        :src="nxt.baseUrl"
+        class="media-img"
+        :style="[nvStyle, motionStyle]"
+        alt=""
+        draggable="false"
+      />
       <img
         v-if="url"
+        :key="cur.id"
         :src="url"
         class="media-img"
-        :style="fitStyle"
+        :style="[fitStyle, motionStyle]"
         alt=""
         draggable="false"
         @load="onImgLoad"
       />
-      <div v-else-if="loading" class="stage-note">
+      <div v-if="stageState === 'loading'" class="stage-note">
         <Icon id="loader-circle" :size="22" class="spin" />
         <span>正在载入图包</span>
       </div>
-      <div v-else-if="permissionMissing" class="stage-note permission-note">
+      <div v-else-if="stageState === 'permission'" class="stage-note permission-note">
         <Icon id="scan" :size="40" />
         <strong>需要开启所有文件访问权限</strong>
         <span>开启后才能读取影视图集中的原图</span>
@@ -581,8 +879,8 @@ onUnmounted(() => {
           <button class="permission-btn" @click.stop="retryPermission">我已开启，继续</button>
         </div>
       </div>
-      <div v-else-if="error" class="stage-note">{{ error }}</div>
-      <div v-else class="stage-note">没有可显示的图片</div>
+      <div v-else-if="stageState === 'error'" class="stage-note">{{ error }}</div>
+      <div v-else-if="stageState === 'empty'" class="stage-note">没有可显示的图片</div>
 
       <button v-if="images.length > 1 && !isAndroidViewer" class="side-arrow side-arrow--prev" title="上一张" @click.stop="prev">
         <Icon id="chevron-left" :size="20" />
@@ -763,6 +1061,11 @@ onUnmounted(() => {
     cursor: grab;
   }
 
+  /* 跟手拖动中：光标收成抓握态，避免长按选中 */
+  &.dragging {
+    cursor: grabbing;
+  }
+
   &::after {
     content: "";
     position: absolute;
@@ -781,9 +1084,10 @@ onUnmounted(() => {
   max-height: 100%;
   object-fit: contain;
   border-radius: 4px;
-  /* 翻页不做淡入淡出/缩放动画：新图就绪后瞬间替换，避免看起来卡顿 */
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
   user-select: none;
+  /* 翻页位移由内联 transform 驱动；transition / will-change 只在过渡与跟手期间
+     由 motionStyle 挂上，平时不提升合成层，避免两张原图长期占用 GPU 图层。 */
 }
 
 .stage-note {

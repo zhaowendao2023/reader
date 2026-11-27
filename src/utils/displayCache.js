@@ -14,7 +14,9 @@ let bytes = 0;
 const BUDGET = 128 * 1024 * 1024; // 128MB 压缩字节封顶
 const MAX_ITEMS = 512;
 
-let displayedUrl = "";
+// 屏幕上正在显示的 URL 集合。翻页过渡期间新旧两层同时可见，
+// 因此这里必须能同时保护多个 URL，否则邻层被淘汰时会被 revoke 成空白。
+let displayed = new Set();
 
 /** 命中并续命（LRU）。返回 { url, size } 或 null。 */
 export const displayCacheGet = (path) => {
@@ -39,9 +41,9 @@ export const displayCachePut = (path, url, size) => {
   evict();
 };
 
-/** 组件切换显示时告知当前 URL，淘汰逻辑据此跳过屏幕上的图。 */
-export const displayCacheSetDisplayed = (url) => {
-  displayedUrl = url;
+/** 组件切换显示时告知当前显示中的 URL（可传多个，兼容单字符串调用）。 */
+export const displayCacheSetDisplayed = (...urls) => {
+  displayed = new Set(urls.flat().filter(Boolean));
 };
 
 /** 该 URL 是否仍在缓存中（组件据此决定切换/卸载时要不要自己释放）。 */
@@ -51,7 +53,7 @@ export const displayCacheHas = (url) => {
 };
 
 function revokeUnlessDisplayed(url) {
-  if (url !== displayedUrl) URL.revokeObjectURL(url);
+  if (!displayed.has(url)) URL.revokeObjectURL(url);
 }
 
 function evict() {
